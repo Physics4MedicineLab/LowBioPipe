@@ -205,3 +205,35 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+
+# Nextflow
+work/
+.nextflow/
+.nextflow.log*
+
+# Pipeline reports
+report.html
+timeline.html
+trace.txt
+dag.svg
+dag.png
+
+# Pipeline outputs (uncomment if you don't want to track results)
+results/
+
+# LowBioPipe specific
+# Large data files
+data/taxdump/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini

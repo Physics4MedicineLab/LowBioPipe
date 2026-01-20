@@ -1,0 +1,62 @@
+# Contaminant Taxa for Low Biomass Samples
+#
+# This file contains TaxIDs of common contaminants found in low biomass samples.
+# Lines starting with # are comments.
+# One TaxID per line, with optional comments after the ID.
+#
+# Common sources of contamination:
+# - Human DNA (from sample handling)
+# - Environmental bacteria (from reagents, lab equipment)
+# - Extraction kit contaminants
+# - Library prep contaminants
+
+# ======================================================================
+# HUMAN CONTAMINATION
+# ======================================================================
+9606        # Homo sapiens - Human DNA contamination
+
+# ======================================================================
+# COMMON REAGENT/KIT CONTAMINANTS
+# ======================================================================
+# These are frequently found in extraction and library prep kits
+
+# Proteobacteria
+316         # Pseudomonas stutzeri
+1763998     # Rheinheimera sp. F8
+297         # Hydrogenophilus thermoluteolus
+3160608     # Azospirillum sp. A23
+339         # Xanthomonas campestris
+
+# Bacteroidetes
+1751056     # Flavobacterium ammonificans
+1751095     # Flavobacterium ammoniigenes
+
+# Firmicutes
+376175      # Caldimonas aquatica
+
+# Deinococcota
+319795      # Deinococcus geothermalis
+
+# ======================================================================
+# WATER/ENVIRONMENTAL CONTAMINANTS
+# ======================================================================
+# Common in water-based reagents and lab environment
+
+93681       # Roseateles (genus) - water-associated bacteria
+
+# ======================================================================
+# NOTES ON FILTERING MODES
+# ======================================================================
+#
+# By default, filter_taxa.py filters only EXACT taxids listed above.
+#
+# To also filter ancestor/descendant taxa, use:
+#   --include-ancestors    : Also remove parent lineages
+#   --include-descendants  : Also remove child taxa (strains, subspecies)
+#
+# Example:
+#   filter_taxa.py --taxdump taxdump \
+#                  --exclude contaminants.txt \
+#                  --indir kraken2_output \
+#                  --outdir filtered_reads \
+#                  --include-descendants
