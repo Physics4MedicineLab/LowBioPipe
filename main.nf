@@ -49,6 +49,37 @@ workflow {
         error "ERROR: --kraken2_db_name is required (name of Kraken2 database used in taxprofiler)."
     }
 
+    // Validate file paths exist
+    if (!file(params.taxdump).exists()) {
+        error "ERROR: --taxdump path does not exist: ${params.taxdump}\nDownload from: https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz"
+    }
+
+    if (!file(params.exclude_taxa).exists()) {
+        error "ERROR: --exclude_taxa file does not exist: ${params.exclude_taxa}"
+    }
+
+    // Validate samples and controls are provided
+    if (!params.samples || params.samples.size() == 0) {
+        error "ERROR: --samples is required. Provide comma-separated sample IDs."
+    }
+
+    if (!params.controls || params.controls.size() == 0) {
+        log.warn "WARNING: No --controls provided. Running without negative control integration."
+    }
+
+    // Validate groups file if provided
+    if (params.groups_file && !file(params.groups_file).exists()) {
+        error "ERROR: --groups_file does not exist: ${params.groups_file}"
+    }
+
+    // Validate abundance_ranks contains valid values
+    def valid_ranks = ['superkingdom', 'phylum', 'class', 'order', 'family', 'genus', 'species', 'any']
+    params.abundance_ranks.each { rank ->
+        if (!valid_ranks.contains(rank.toLowerCase())) {
+            error "ERROR: Invalid rank '${rank}'. Must be one of: ${valid_ranks.join(', ')}"
+        }
+    }
+
     log.info """
         =====================================================
         LowBioPipe v${workflow.manifest.version}
@@ -139,11 +170,12 @@ def helpMessage() {
         --recentrifuge_min_score        Minimum score threshold (default: 10)
 
     Abundance tables:
-        --abundance_ranks       Ranks to generate (default: species,genus,phylum)
-        --abundance_aggregate   Aggregate taxa to rank (default: true)
-        --abundance_min_count   Minimum total count threshold (default: 1)
-        --abundance_min_samples Minimum samples threshold (default: 2)
-        --abundance_relative    Generate relative abundance (default: true)
+        --abundance_ranks           Ranks to generate (default: species,genus,phylum)
+        --abundance_aggregate       Aggregate taxa to rank (default: true)
+        --abundance_min_count       Minimum total count threshold (default: 1)
+        --abundance_min_samples     Minimum samples threshold (default: 2)
+        --abundance_relative        Generate relative abundance (default: true)
+        --abundance_keep_unranked   Keep taxa without resolvable rank (default: false)
 
     Output:
         --outdir                Output directory (default: results)

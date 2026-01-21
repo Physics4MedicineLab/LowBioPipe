@@ -12,6 +12,9 @@ process RCF_TO_ABUNDANCE {
     label 'process_low'
     publishDir "${params.outdir}/abundance", mode: 'copy'
 
+    conda "conda-forge::python=3.9 conda-forge::pandas>=1.5 conda-forge::openpyxl>=3.0 bioconda::ete3>=3.1"
+    container 'python:3.9-slim'
+
     input:
     path rcf_file
     each rank
@@ -25,6 +28,7 @@ process RCF_TO_ABUNDANCE {
     def out_prefix = "abundance_${rcf_file.simpleName.replace('.rcf', '')}"
     def relative = params.abundance_relative ? '--relative' : ''
     def aggregate = params.abundance_aggregate ? '--aggregate' : ''
+    def keep_unranked = params.abundance_keep_unranked ? '--keep-unranked' : ''
     """
     rcf_to_abundance.py \\
         ${rcf_file} \\
@@ -33,6 +37,7 @@ process RCF_TO_ABUNDANCE {
         --min-samples ${params.abundance_min_samples} \\
         --out-prefix ${out_prefix} \\
         ${relative} \\
-        ${aggregate}
+        ${aggregate} \\
+        ${keep_unranked}
     """
 }

@@ -12,6 +12,9 @@ process FILTER_TAXA {
     label 'process_medium'
     publishDir "${params.outdir}/filtered_reads", mode: 'copy'
 
+    conda "conda-forge::python=3.9 conda-forge::pandas>=1.5"
+    container 'python:3.9-slim'
+
     input:
     path classifiedreads
     path taxdump

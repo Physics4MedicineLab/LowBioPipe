@@ -4,7 +4,7 @@
 ================================================================================
     Comprehensive diversity analysis:
     - Alpha diversity (observed OTUs, Shannon, Simpson, Chao1)
-    - Beta diversity (Bray-Curtis, Jaccard)
+    - Beta diversity (Bray-Curtis, Jaccard, Aitchison)
     - PCoA ordination
     - Hierarchical clustering heatmaps
     - PERMANOVA statistical tests (if groups provided)
