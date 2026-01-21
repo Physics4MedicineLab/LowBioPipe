@@ -36,7 +36,9 @@ class TaxonomyTree:
     def __init__(self, taxdump_dir: Path):
         """Initialize taxonomy tree from NCBI taxdump directory."""
         self.parent: Dict[int, int] = {}  # taxid -> parent_taxid
-        self.children: Dict[int, List[int]] = defaultdict(list)  # taxid -> [child_taxids]
+        self.children: Dict[int, List[int]] = defaultdict(
+            list
+        )  # taxid -> [child_taxids]
         self.rank: Dict[int, str] = {}  # taxid -> rank name
         self._load_nodes(taxdump_dir / "nodes.dmp")
 
@@ -48,9 +50,9 @@ class TaxonomyTree:
         print(f"Loading taxonomy from {nodes_file}...", file=sys.stderr)
         count = 0
 
-        with open(nodes_file, 'r') as f:
+        with open(nodes_file, "r") as f:
             for line in f:
-                parts = [p.strip() for p in line.split('|')]
+                parts = [p.strip() for p in line.split("|")]
                 if len(parts) < 3:
                     continue
 
@@ -104,9 +106,12 @@ class TaxonomyTree:
 
         return descendants
 
-    def expand_forbidden_taxa(self, exclude_taxids: List[int],
-                             include_ancestors: bool = False,
-                             include_descendants: bool = False) -> Set[int]:
+    def expand_forbidden_taxa(
+        self,
+        exclude_taxids: List[int],
+        include_ancestors: bool = False,
+        include_descendants: bool = False,
+    ) -> Set[int]:
         """
         Build forbidden taxa set from exclusion list.
 
@@ -128,11 +133,17 @@ class TaxonomyTree:
         elif include_descendants:
             mode_desc = "exact taxids + descendants"
 
-        print(f"\nProcessing {len(exclude_taxids)} excluded taxids ({mode_desc})...", file=sys.stderr)
+        print(
+            f"\nProcessing {len(exclude_taxids)} excluded taxids ({mode_desc})...",
+            file=sys.stderr,
+        )
 
         for i, taxid in enumerate(exclude_taxids, 1):
             if taxid not in self.parent:
-                print(f"  WARNING: TaxID {taxid} not found in taxonomy (skipping)", file=sys.stderr)
+                print(
+                    f"  WARNING: TaxID {taxid} not found in taxonomy (skipping)",
+                    file=sys.stderr,
+                )
                 continue
 
             # Always include the exact taxid
@@ -154,18 +165,24 @@ class TaxonomyTree:
 
             if include_ancestors or include_descendants:
                 anc_count = len(self.get_ancestors(taxid)) if include_ancestors else 0
-                desc_count = len(self.get_descendants(taxid)) if include_descendants else 0
+                desc_count = (
+                    len(self.get_descendants(taxid)) if include_descendants else 0
+                )
                 parts = []
                 if include_ancestors:
                     parts.append(f"+{anc_count} ancestors")
                 if include_descendants:
                     parts.append(f"+{desc_count} descendants")
                 extra = " (" + ", ".join(parts) + ")" if parts else ""
-                print(f"  [{i}/{len(exclude_taxids)}] TaxID {taxid} ({rank_name}){extra}",
-                      file=sys.stderr)
+                print(
+                    f"  [{i}/{len(exclude_taxids)}] TaxID {taxid} ({rank_name}){extra}",
+                    file=sys.stderr,
+                )
             else:
-                print(f"  [{i}/{len(exclude_taxids)}] TaxID {taxid} ({rank_name})",
-                      file=sys.stderr)
+                print(
+                    f"  [{i}/{len(exclude_taxids)}] TaxID {taxid} ({rank_name})",
+                    file=sys.stderr,
+                )
 
         print(f"\nTotal forbidden taxa: {len(forbidden):,}", file=sys.stderr)
         return forbidden
@@ -177,12 +194,12 @@ def load_exclude_taxids(exclude_file: Path) -> List[int]:
         sys.exit(f"ERROR: Exclusion file not found: {exclude_file}")
 
     taxids = []
-    with open(exclude_file, 'r') as f:
+    with open(exclude_file, "r") as f:
         for line_num, line in enumerate(f, 1):
             line = line.strip()
 
             # Skip empty lines and comments
-            if not line or line.startswith('#'):
+            if not line or line.startswith("#"):
                 continue
 
             # Extract first field (handle lines with comments after taxid)
@@ -192,14 +209,18 @@ def load_exclude_taxids(exclude_file: Path) -> List[int]:
                 taxid = int(taxid_str)
                 taxids.append(taxid)
             except ValueError:
-                print(f"WARNING: Invalid taxid on line {line_num}: {taxid_str}", file=sys.stderr)
+                print(
+                    f"WARNING: Invalid taxid on line {line_num}: {taxid_str}",
+                    file=sys.stderr,
+                )
 
     print(f"Loaded {len(taxids)} taxids from {exclude_file}", file=sys.stderr)
     return taxids
 
 
-def filter_classified_reads(input_file: Path, output_file: Path,
-                           forbidden_taxa: Set[int]) -> Tuple[int, int, int]:
+def filter_classified_reads(
+    input_file: Path, output_file: Path, forbidden_taxa: Set[int]
+) -> Tuple[int, int, int]:
     """
     Filter a Kraken2 classified reads file, removing forbidden taxa.
 
@@ -209,12 +230,12 @@ def filter_classified_reads(input_file: Path, output_file: Path,
     removed_reads = 0
     retained_reads = 0
 
-    with open(input_file, 'r') as fin, open(output_file, 'w') as fout:
+    with open(input_file, "r") as fin, open(output_file, "w") as fout:
         for line in fin:
             total_reads += 1
 
             # Parse: C/U\treadID\ttaxid\tlengths\tk-mer_mappings
-            parts = line.strip().split('\t')
+            parts = line.strip().split("\t")
             if len(parts) < 3:
                 # Malformed line, keep it (or skip based on preference)
                 fout.write(line)
@@ -239,8 +260,12 @@ def filter_classified_reads(input_file: Path, output_file: Path,
     return total_reads, removed_reads, retained_reads
 
 
-def process_directory(input_dir: Path, output_dir: Path,
-                     forbidden_taxa: Set[int], pattern: str = "*.classifiedreads.txt"):
+def process_directory(
+    input_dir: Path,
+    output_dir: Path,
+    forbidden_taxa: Set[int],
+    pattern: str = "*.classifiedreads.txt",
+):
     """Process all classified reads files in a directory."""
 
     # Find all matching files
@@ -268,16 +293,22 @@ def process_directory(input_dir: Path, output_dir: Path,
         output_name = input_file.stem + ".filtered" + input_file.suffix
         output_file = output_dir / output_name
 
-        print(f"[{i}/{len(input_files)}] Processing {input_file.name}...", file=sys.stderr)
+        print(
+            f"[{i}/{len(input_files)}] Processing {input_file.name}...", file=sys.stderr
+        )
 
         # Filter the file
-        total, removed, retained = filter_classified_reads(input_file, output_file, forbidden_taxa)
+        total, removed, retained = filter_classified_reads(
+            input_file, output_file, forbidden_taxa
+        )
 
         elapsed = time.time() - start_time
         removal_pct = (removed / total * 100) if total > 0 else 0
 
         print(f"  Total reads:    {total:>12,}", file=sys.stderr)
-        print(f"  Removed:        {removed:>12,} ({removal_pct:>5.2f}%)", file=sys.stderr)
+        print(
+            f"  Removed:        {removed:>12,} ({removal_pct:>5.2f}%)", file=sys.stderr
+        )
         print(f"  Retained:       {retained:>12,}", file=sys.stderr)
         print(f"  Time:           {elapsed:>12.2f}s", file=sys.stderr)
         print(f"  Output:         {output_file.name}\n", file=sys.stderr)
@@ -292,7 +323,10 @@ def process_directory(input_dir: Path, output_dir: Path,
     print("=" * 70, file=sys.stderr)
     print(f"Files processed:     {len(input_files)}", file=sys.stderr)
     print(f"Total reads:         {grand_total:,}", file=sys.stderr)
-    print(f"Total removed:       {grand_removed:,} ({grand_removed/grand_total*100:.2f}%)", file=sys.stderr)
+    print(
+        f"Total removed:       {grand_removed:,} ({grand_removed / grand_total * 100:.2f}%)",
+        file=sys.stderr,
+    )
     print(f"Total retained:      {grand_retained:,}", file=sys.stderr)
     print(f"Forbidden taxa:      {len(forbidden_taxa):,}", file=sys.stderr)
 
@@ -327,53 +361,50 @@ Input files should be Kraken2 per-read format (tab-separated):
   readID<TAB>taxid<TAB>score
 
 Output files will have '.filtered' appended before the extension.
-        """
+        """,
     )
 
     parser.add_argument(
         "--taxdump",
         type=Path,
         required=True,
-        help="Path to NCBI taxdump directory containing nodes.dmp and names.dmp"
+        help="Path to NCBI taxdump directory containing nodes.dmp and names.dmp",
     )
 
     parser.add_argument(
         "--exclude",
         type=Path,
         required=True,
-        help="File containing taxids to exclude (one per line, # for comments)"
+        help="File containing taxids to exclude (one per line, # for comments)",
     )
 
     parser.add_argument(
         "--indir",
         type=Path,
         required=True,
-        help="Directory containing Kraken2 classified reads files"
+        help="Directory containing Kraken2 classified reads files",
     )
 
     parser.add_argument(
-        "--outdir",
-        type=Path,
-        required=True,
-        help="Output directory for filtered files"
+        "--outdir", type=Path, required=True, help="Output directory for filtered files"
     )
 
     parser.add_argument(
         "--pattern",
         default="*.classifiedreads.txt",
-        help="Glob pattern for input files (default: *.classifiedreads.txt)"
+        help="Glob pattern for input files (default: *.classifiedreads.txt)",
     )
 
     parser.add_argument(
         "--include-ancestors",
         action="store_true",
-        help="Also exclude all ancestor taxa (walking up to root). Default: False"
+        help="Also exclude all ancestor taxa (walking up to root). Default: False",
     )
 
     parser.add_argument(
         "--include-descendants",
         action="store_true",
-        help="Also exclude all descendant taxa (walking down the tree). Default: False"
+        help="Also exclude all descendant taxa (walking down the tree). Default: False",
     )
 
     return parser.parse_args()
@@ -406,7 +437,7 @@ def main():
     forbidden_taxa = taxonomy.expand_forbidden_taxa(
         exclude_taxids,
         include_ancestors=args.include_ancestors,
-        include_descendants=args.include_descendants
+        include_descendants=args.include_descendants,
     )
 
     # Process all files
