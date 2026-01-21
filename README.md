@@ -2,7 +2,7 @@
 
 <div align="center">
 
-<img src="logo_lowbiopipe.png" alt="LowBioPipe" width="400"/>
+<img src="assets/logo_lowbiopipe.png" alt="LowBioPipe" width="400"/>
 
 **A Nextflow wrapper for statistical analysis of low biomass microbiome data**
 
@@ -55,6 +55,15 @@ cd LowBioPipe
 ./install.sh
 ```
 
+### Conda Environment
+
+Alternatively, create a conda environment with all dependencies:
+
+```bash
+conda env create -f environment.yml
+conda activate lowbiopipe
+```
+
 ## Usage
 
 ```bash
@@ -80,18 +89,56 @@ nextflow run main.nf \
 
 ## Parameters
 
+### Required
+
+| Parameter | Description |
+|-----------|-------------|
+| `--taxprofiler_results` | Path to taxprofiler output directory |
+| `--kraken2_db_name` | Kraken2 database name used in taxprofiler |
+
+### Sample Configuration
+
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `--taxprofiler_results` | Path to taxprofiler output directory | *required* |
-| `--kraken2_db_name` | Kraken2 database name used in taxprofiler | *required* |
 | `--samples` | Sample IDs (comma-separated) | `[]` |
 | `--controls` | Negative control IDs (comma-separated) | `[]` |
 | `--groups_file` | Sample-to-group mapping for PERMANOVA | `null` |
+
+### Reference Data
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
 | `--taxdump` | NCBI taxdump directory | `data/taxdump` |
 | `--exclude_taxa` | Contaminant TaxID file | `config/contaminants_example.txt` |
-| `--abundance_ranks` | Taxonomic ranks | `['species','genus','phylum']` |
-| `--abundance_aggregate` | Aggregate taxa to rank | `true` |
+
+### Contaminant Filtering
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `--filter_include_ancestors` | Also filter ancestor taxa (walking up to root) | `false` |
+| `--filter_include_descendants` | Also filter descendant taxa (walking down tree) | `false` |
+
+### Recentrifuge
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `--recentrifuge_min_score` | Minimum score threshold | `10` |
+
+### Abundance Tables
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `--abundance_ranks` | Taxonomic ranks to generate | `['species','genus','phylum']` |
+| `--abundance_aggregate` | Aggregate taxa to specified rank | `true` |
+| `--abundance_min_count` | Minimum total count threshold | `1` |
 | `--abundance_min_samples` | Minimum samples threshold | `2` |
+| `--abundance_relative` | Generate relative abundance tables | `true` |
+| `--abundance_keep_unranked` | Keep taxa without resolvable rank | `false` |
+
+### Output
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
 | `--outdir` | Output directory | `results` |
 
 ## Output
@@ -106,11 +153,21 @@ results/
 │   └── *_taxa_metadata_*.tsv
 └── diversity/
     └── {species,genus,phylum}/
-        ├── alpha_metrics_*.tsv
-        ├── beta_*.tsv
-        ├── pcoa_*.png
-        ├── heatmap_*.png
-        └── permanova_*.txt
+        ├── alpha_metrics_*.tsv           # Alpha diversity (observed OTUs, Shannon, Simpson, Chao1)
+        ├── alpha_*_boxplot_*.png         # Alpha diversity boxplots
+        ├── alpha_*_violin_*.png          # Alpha diversity violin plots
+        ├── beta_braycurtis_*.tsv         # Bray-Curtis distance matrix
+        ├── beta_jaccard_*.tsv            # Jaccard distance matrix
+        ├── beta_aitchison_*.tsv          # Aitchison distance matrix (CLR-Euclidean)
+        ├── pcoa_braycurtis_coords_*.tsv  # PCoA coordinates (Bray-Curtis)
+        ├── pcoa_jaccard_coords_*.tsv     # PCoA coordinates (Jaccard)
+        ├── pcoa_aitchison_coords_*.tsv   # PCoA coordinates (Aitchison)
+        ├── pcoa_braycurtis_*.png         # PCoA plot (Bray-Curtis)
+        ├── pcoa_jaccard_*.png            # PCoA plot (Jaccard)
+        ├── pcoa_aitchison_*.png          # PCoA plot (Aitchison)
+        ├── heatmap_*.png                 # Hierarchical clustering heatmap
+        ├── permanova_braycurtis_*.txt    # PERMANOVA results (Bray-Curtis)
+        └── permanova_aitchison_*.txt     # PERMANOVA results (Aitchison)
 ```
 
 ## Input File Formats

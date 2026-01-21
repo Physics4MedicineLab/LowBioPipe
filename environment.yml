@@ -1,0 +1,29 @@
+name: lowbiopipe
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  # Core
+  - python>=3.9
+  - nextflow>=23.04.0
+
+  # Data processing
+  - pandas>=1.5.0
+  - numpy>=1.23.0
+
+  # Bioinformatics
+  - bioconda::scikit-bio>=0.5.8
+  - bioconda::recentrifuge>=1.12.0
+  - bioconda::ete3>=3.1.2
+
+  # Data analysis
+  - scipy>=1.9.0
+
+  # Visualization
+  - matplotlib>=3.5.0
+  - seaborn>=0.12.0
+
+  # File handling
+  - openpyxl>=3.0.0
+  - pyyaml>=6.0
