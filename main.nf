@@ -63,9 +63,21 @@ workflow {
         error "ERROR: --samples is required. Provide comma-separated sample IDs."
     }
 
+    // Clean sample IDs: handle String vs List and filter empty entries
+    def cleaned_samples = (params.samples instanceof List ? params.samples : [params.samples]).collect { it?.trim() }.findAll { it }
+    if (cleaned_samples.size() < params.samples.size()) {
+        log.warn "WARNING: Empty sample IDs detected and removed from --samples"
+    }
+    if (cleaned_samples.size() == 0) {
+        error "ERROR: --samples contains no valid sample IDs after cleaning."
+    }
+
     if (!params.controls || params.controls.size() == 0) {
         log.warn "WARNING: No --controls provided. Running without negative control integration."
     }
+
+    // Clean control IDs
+    def cleaned_controls = !params.controls ? [] : (params.controls instanceof List ? params.controls : [params.controls]).collect { it?.trim() }.findAll { it }
 
     // Validate groups file if provided
     if (params.groups_file && !file(params.groups_file).exists()) {
@@ -108,8 +120,8 @@ workflow {
     RECENTRIFUGE(
         FILTER_TAXA.out.filtered_reads.collect(),
         file(params.taxdump),
-        params.samples,
-        params.controls
+        cleaned_samples,
+        cleaned_controls
     )
 
     // Step 3: Abundance tables at multiple ranks

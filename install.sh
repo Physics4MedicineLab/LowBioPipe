@@ -32,13 +32,13 @@ if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" 
     exit 1
 fi
 
-echo -e "  Found Python $PYTHON_VERSION ${GREEN}✓${NC}"
+echo -e "  Found Python $PYTHON_VERSION ${GREEN}OK${NC}"
 
 # Install Python dependencies
 echo ""
 echo -e "${GREEN}[2/4]${NC} Installing Python dependencies..."
 if pip3 install -r requirements.txt; then
-    echo -e "  Python dependencies installed ${GREEN}✓${NC}"
+    echo -e "  Python dependencies installed ${GREEN}OK${NC}"
 else
     echo -e "${YELLOW}WARNING: Some dependencies failed to install${NC}"
     echo -e "${YELLOW}You may need to install them manually${NC}"
@@ -48,7 +48,7 @@ fi
 echo ""
 echo -e "${GREEN}[3/4]${NC} Making scripts executable..."
 chmod +x bin/*.py
-echo -e "  Scripts are now executable ${GREEN}✓${NC}"
+echo -e "  Scripts are now executable ${GREEN}OK${NC}"
 
 # Download NCBI taxonomy database
 echo ""
@@ -59,23 +59,23 @@ if [ ! -f "data/taxdump/nodes.dmp" ]; then
     cd data/taxdump
 
     echo -e "  Downloading taxdump.tar.gz (~50 MB)..."
-    if wget -q --show-progress ftp://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz; then
+    if wget -q --show-progress https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz; then
         echo -e "  Extracting..."
         tar -xzf taxdump.tar.gz
         rm taxdump.tar.gz
         cd ../..
-        echo -e "  Taxonomy database downloaded ${GREEN}✓${NC}"
+        echo -e "  Taxonomy database downloaded ${GREEN}OK${NC}"
     else
         cd ../..
         echo -e "${YELLOW}WARNING: Failed to download taxonomy database${NC}"
         echo -e "${YELLOW}You can download it manually:${NC}"
         echo -e "  mkdir -p data/taxdump"
         echo -e "  cd data/taxdump"
-        echo -e "  wget ftp://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz"
+        echo -e "  wget https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz"
         echo -e "  tar -xzf taxdump.tar.gz"
     fi
 else
-    echo -e "  Taxonomy database already present ${GREEN}✓${NC}"
+    echo -e "  Taxonomy database already present ${GREEN}OK${NC}"
 fi
 
 # Installation complete

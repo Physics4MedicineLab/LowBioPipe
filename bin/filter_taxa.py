@@ -224,11 +224,12 @@ def filter_classified_reads(
     """
     Filter a Kraken2 classified reads file, removing forbidden taxa.
 
-    Returns: (total_reads, removed_reads, retained_reads)
+    Returns: (total_reads, removed_reads, retained_reads, malformed_count)
     """
     total_reads = 0
     removed_reads = 0
     retained_reads = 0
+    malformed_count = 0
 
     with open(input_file, "r") as fin, open(output_file, "w") as fout:
         for line in fin:
@@ -237,7 +238,7 @@ def filter_classified_reads(
             # Parse: C/U\treadID\ttaxid\tlengths\tk-mer_mappings
             parts = line.strip().split("\t")
             if len(parts) < 3:
-                # Malformed line, keep it (or skip based on preference)
+                malformed_count += 1
                 fout.write(line)
                 retained_reads += 1
                 continue
@@ -245,7 +246,7 @@ def filter_classified_reads(
             try:
                 taxid = int(parts[2])
             except (ValueError, IndexError):
-                # Invalid taxid, keep line
+                malformed_count += 1
                 fout.write(line)
                 retained_reads += 1
                 continue
@@ -257,7 +258,13 @@ def filter_classified_reads(
                 fout.write(line)
                 retained_reads += 1
 
-    return total_reads, removed_reads, retained_reads
+    if malformed_count > 0:
+        print(
+            f"  WARNING: {malformed_count} malformed/invalid lines in {input_file.name}",
+            file=sys.stderr,
+        )
+
+    return total_reads, removed_reads, retained_reads, malformed_count
 
 
 def process_directory(
@@ -298,7 +305,7 @@ def process_directory(
         )
 
         # Filter the file
-        total, removed, retained = filter_classified_reads(
+        total, removed, retained, malformed = filter_classified_reads(
             input_file, output_file, forbidden_taxa
         )
 
@@ -323,8 +330,9 @@ def process_directory(
     print("=" * 70, file=sys.stderr)
     print(f"Files processed:     {len(input_files)}", file=sys.stderr)
     print(f"Total reads:         {grand_total:,}", file=sys.stderr)
+    removal_pct = (grand_removed / grand_total * 100) if grand_total > 0 else 0.0
     print(
-        f"Total removed:       {grand_removed:,} ({grand_removed / grand_total * 100:.2f}%)",
+        f"Total removed:       {grand_removed:,} ({removal_pct:.2f}%)",
         file=sys.stderr,
     )
     print(f"Total retained:      {grand_retained:,}", file=sys.stderr)

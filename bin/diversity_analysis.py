@@ -47,10 +47,10 @@ VALID_RANKS = ["species", "genus", "family", "order", "class", "phylum", "kingdo
 
 def ensure_samples_by_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Transpose DataFrame to samples × features format.
+    Transpose DataFrame to samples x features format.
 
     Args:
-        df: DataFrame in features × samples format
+        df: DataFrame in features x samples format
 
     Returns:
         Transposed DataFrame with samples as rows and features as columns
@@ -63,7 +63,7 @@ def drop_empty_samples(df_sxf: pd.DataFrame) -> pd.DataFrame:
     Remove samples with zero total counts.
 
     Args:
-        df_sxf: DataFrame in samples × features format
+        df_sxf: DataFrame in samples x features format
 
     Returns:
         DataFrame with empty samples removed
@@ -111,7 +111,7 @@ def compute_alpha(df_sxf: pd.DataFrame) -> pd.DataFrame:
     Compute alpha diversity metrics for all samples.
 
     Args:
-        df_sxf: DataFrame in samples × features format (counts)
+        df_sxf: DataFrame in samples x features format (counts)
 
     Returns:
         DataFrame with alpha diversity metrics (observed_otus, shannon, simpson, chao1)
@@ -153,24 +153,32 @@ def save_alpha_plots(alpha_df: pd.DataFrame, outdir: Path, level: str) -> None:
     sns.set_theme(style="whitegrid")
     for metric in alpha_df.columns:
         # Boxplot
-        plt.figure(figsize=(10, 6))
-        sns.boxplot(data=alpha_df[metric], orient="h")
-        sns.stripplot(data=alpha_df[metric], orient="h", color="black", size=4)
-        plt.title(f"Alpha Diversity — {metric} — {level}")
-        plt.xlabel(metric)
-        plt.tight_layout()
-        plt.savefig(outdir / f"alpha_{metric}_boxplot_{level}.png", dpi=300)
-        plt.close()
+        try:
+            plt.figure(figsize=(10, 6))
+            sns.boxplot(data=alpha_df[metric], orient="h")
+            sns.stripplot(data=alpha_df[metric], orient="h", color="black", size=4)
+            plt.title(f"Alpha Diversity - {metric} - {level}")
+            plt.xlabel(metric)
+            plt.tight_layout()
+            plt.savefig(outdir / f"alpha_{metric}_boxplot_{level}.png", dpi=300)
+        except Exception as e:
+            logger.warning("Failed to save alpha boxplot for %s/%s: %s", metric, level, e)
+        finally:
+            plt.close()
 
         # Violin plot
-        plt.figure(figsize=(10, 6))
-        sns.violinplot(data=alpha_df[metric], orient="h", inner="box")
-        sns.stripplot(data=alpha_df[metric], orient="h", color="black", size=4)
-        plt.title(f"Alpha Diversity — {metric} (violin) — {level}")
-        plt.xlabel(metric)
-        plt.tight_layout()
-        plt.savefig(outdir / f"alpha_{metric}_violin_{level}.png", dpi=300)
-        plt.close()
+        try:
+            plt.figure(figsize=(10, 6))
+            sns.violinplot(data=alpha_df[metric], orient="h", inner="box")
+            sns.stripplot(data=alpha_df[metric], orient="h", color="black", size=4)
+            plt.title(f"Alpha Diversity - {metric} (violin) - {level}")
+            plt.xlabel(metric)
+            plt.tight_layout()
+            plt.savefig(outdir / f"alpha_{metric}_violin_{level}.png", dpi=300)
+        except Exception as e:
+            logger.warning("Failed to save alpha violin for %s/%s: %s", metric, level, e)
+        finally:
+            plt.close()
 
 
 def compute_beta_and_pcoa(
@@ -180,7 +188,7 @@ def compute_beta_and_pcoa(
     Compute beta diversity distance matrix and perform PCoA ordination.
 
     Args:
-        df_sxf: DataFrame in samples × features format
+        df_sxf: DataFrame in samples x features format
         metric: Distance metric name (e.g., 'braycurtis', 'jaccard')
         binarize: If True, convert counts to presence/absence before calculation
 
@@ -206,13 +214,14 @@ def clr_transform(X: np.ndarray) -> np.ndarray:
         clr(x) = log(x / geometric_mean(x))
 
     Args:
-        X: 2D array of counts (samples × features)
+        X: 2D array of counts (samples x features)
 
     Returns:
         CLR-transformed array
     """
-    # Add pseudocount to handle zeros
-    X_pseudo = X + 1e-10
+    # Add pseudocount to handle zeros (Bayesian uniform prior;
+    # Martin-Fernandez et al. 2003, doi:10.1023/A:1023866030544)
+    X_pseudo = X + 0.5
     log_X = np.log(X_pseudo)
     geometric_mean = log_X.mean(axis=1, keepdims=True)
     return log_X - geometric_mean
@@ -228,7 +237,7 @@ def compute_aitchison_and_pcoa(
     where samples represent proportions that sum to a constant.
 
     Args:
-        df_sxf: DataFrame in samples × features format
+        df_sxf: DataFrame in samples x features format
 
     Returns:
         Tuple of (distance matrix, PCoA coordinates, proportion explained)
@@ -261,14 +270,18 @@ def plot_pcoa(coords: pd.DataFrame, exp: pd.Series, out_png: Path, title: str) -
         out_png: Output file path
         title: Plot title
     """
-    plt.figure(figsize=(7.5, 6.5))
-    plt.scatter(coords["PC1"], coords["PC2"], s=80, alpha=0.9)
-    plt.xlabel(f"PC1 ({exp.iloc[0]:.2f}%)")
-    plt.ylabel(f"PC2 ({exp.iloc[1]:.2f}%)")
-    plt.title(f"PCoA — {title}")
-    plt.tight_layout()
-    plt.savefig(out_png, dpi=300)
-    plt.close()
+    try:
+        plt.figure(figsize=(7.5, 6.5))
+        plt.scatter(coords["PC1"], coords["PC2"], s=80, alpha=0.9)
+        plt.xlabel(f"PC1 ({exp.iloc[0]:.2f}%)")
+        plt.ylabel(f"PC2 ({exp.iloc[1]:.2f}%)")
+        plt.title(f"PCoA - {title}")
+        plt.tight_layout()
+        plt.savefig(out_png, dpi=300)
+    except Exception as e:
+        logger.warning("Failed to save PCoA plot %s: %s", out_png, e)
+    finally:
+        plt.close()
 
 
 def make_heatmap(df_sxf: pd.DataFrame, out_png: Path, title: str) -> None:
@@ -276,14 +289,19 @@ def make_heatmap(df_sxf: pd.DataFrame, out_png: Path, title: str) -> None:
     Generate hierarchical clustering heatmap.
 
     Args:
-        df_sxf: DataFrame in samples × features format
+        df_sxf: DataFrame in samples x features format
         out_png: Output file path
         title: Plot title
     """
-    g = sns.clustermap(df_sxf, cmap="viridis", figsize=(12, 12))
-    g.fig.suptitle(title, y=1.02)
-    g.savefig(out_png, dpi=300)
-    plt.close(g.fig)
+    try:
+        g = sns.clustermap(df_sxf, cmap="viridis", figsize=(12, 12))
+        g.fig.suptitle(title, y=1.02)
+        g.savefig(out_png, dpi=300)
+    except Exception as e:
+        logger.warning("Failed to save heatmap %s: %s", out_png, e)
+        return
+    finally:
+        plt.close("all")
 
 
 def run_permanova(
@@ -301,6 +319,13 @@ def run_permanova(
         PERMANOVA results object
     """
     df = pd.DataFrame({"group": sample_groups}, index=dist_matrix.ids)
+    group_counts = df["group"].value_counts()
+    small_groups = group_counts[group_counts < 3]
+    if not small_groups.empty:
+        logger.warning(
+            "PERMANOVA: groups with <3 samples may yield unreliable p-values: %s",
+            dict(small_groups),
+        )
     result = permanova(dist_matrix, df, column="group", permutations=permutations)
     return result
 
@@ -339,7 +364,7 @@ def save_beta_results(
         coords,
         exp,
         outdir / f"pcoa_{metric_name}_{level}.png",
-        f"{level} • {metric_name}",
+        f"{level} - {metric_name}",
     )
 
     # Run PERMANOVA if groups provided
@@ -405,8 +430,12 @@ def process_table(
     alpha_df.to_csv(outdir / f"alpha_metrics_{level}.tsv", sep="\t")
     save_alpha_plots(alpha_df, outdir, level)
 
-    # ---- Heatmap + clustering ----
-    make_heatmap(df_sxf, outdir / f"heatmap_{level}.png", f"Heatmap {level}")
+    # ---- Heatmap + clustering (log1p-transformed for visual balance) ----
+    make_heatmap(
+        pd.DataFrame(np.log1p(df_sxf.values), index=df_sxf.index, columns=df_sxf.columns),
+        outdir / f"heatmap_{level}.png",
+        f"Heatmap {level} (log1p)",
+    )
 
     # ---- Beta Bray-Curtis ----
     bray_dist, bray_coords, bray_exp = compute_beta_and_pcoa(df_sxf, "braycurtis")
@@ -421,13 +450,21 @@ def process_table(
     jacc_dist, jacc_coords, jacc_exp = compute_beta_and_pcoa(
         df_sxf, "jaccard", binarize=True
     )
-    save_beta_results(jacc_dist, jacc_coords, jacc_exp, outdir, level, "jaccard")
+    save_beta_results(jacc_dist, jacc_coords, jacc_exp, outdir, level, "jaccard", groups)
 
     # ---- Beta Aitchison ----
     aitc_dist, aitc_coords, aitc_exp = compute_aitchison_and_pcoa(df_sxf)
     save_beta_results(
         aitc_dist, aitc_coords, aitc_exp, outdir, level, "aitchison", groups
     )
+
+    if groups:
+        logger.warning(
+            "Note: PERMANOVA p-values for %s are not corrected for multiple "
+            "comparisons (3 metrics tested). Consider Benjamini-Hochberg FDR "
+            "correction when interpreting results.",
+            level,
+        )
 
     logger.info("Done: %s saved to %s", level, outdir)
 
@@ -444,6 +481,10 @@ def main() -> None:
     ap.add_argument("--outdir", default="diversity_outputs", help="Output directory")
     ap.add_argument(
         "--groups", help="Optional TSV mapping samples to groups for PERMANOVA"
+    )
+    ap.add_argument(
+        "--seed", type=int, default=42,
+        help="Random seed for reproducible PERMANOVA permutations (default: 42)",
     )
     args = ap.parse_args()
 
@@ -478,6 +519,9 @@ def main() -> None:
     if not tables:
         logger.error("No abundance tables found in %s", indir)
         sys.exit(1)
+
+    np.random.seed(args.seed)
+    logger.info("Random seed set to %d for reproducible PERMANOVA", args.seed)
 
     logger.info("Found %d abundance tables", len(tables))
     for table in tables:

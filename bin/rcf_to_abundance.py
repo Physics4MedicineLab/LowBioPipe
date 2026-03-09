@@ -5,7 +5,7 @@ rcf_to_abundance.py - Convert Recentrifuge Excel output to abundance tables
 Part of LowBioPipe - A pipeline for low biomass microbiome analysis
 
 Reads the 'FULL' sheet with unique assignments (UNA counts) and creates
-taxa × samples abundance matrices for specified taxonomic ranks.
+taxa x samples abundance matrices for specified taxonomic ranks.
 
 Usage:
     python rcf_to_abundance.py recentrifuge_output.rcf.xlsx --min-samples 2 --rank species
@@ -200,6 +200,28 @@ def read_recentrifuge_excel(excel_path: str, sheet_name: str = "FULL") -> pd.Dat
             else:
                 i += 1
 
+        # Validate detected structure
+        if not sample_data:
+            logger.error(
+                "No samples detected in sheet '%s'. "
+                "Expected columns with sample file paths followed by 'Unnamed' columns.",
+                sheet_name,
+            )
+            sys.exit(1)
+
+        total_data_cols = len(df_raw.columns) - 1  # Subtract taxon column
+        expected_cols = len(sample_data) * 3
+        if total_data_cols != expected_cols:
+            logger.warning(
+                "Column count mismatch: %d data columns for %d samples "
+                "(expected %d = %d samples x 3). "
+                "Recentrifuge Excel format may have changed.",
+                total_data_cols,
+                len(sample_data),
+                expected_cols,
+                len(sample_data),
+            )
+
         # Create clean dataframe with taxon IDs and UNA counts
         result_df = pd.DataFrame()
         result_df["Taxon"] = df_raw[taxon_col]
@@ -210,7 +232,7 @@ def read_recentrifuge_excel(excel_path: str, sheet_name: str = "FULL") -> pd.Dat
             )
 
         logger.info(
-            "Successfully read sheet '%s': %d taxa × %d samples",
+            "Successfully read sheet '%s': %d taxa x %d samples",
             sheet_name,
             len(result_df),
             len(sample_data),
@@ -418,7 +440,19 @@ def main() -> None:
     abundance.to_csv(out_counts, sep="\t")
 
     if args.relative:
-        rel = abundance.div(abundance.sum(axis=0), axis=1)
+        col_sums = abundance.sum(axis=0)
+        zero_cols = col_sums[col_sums == 0].index.tolist()
+        if zero_cols:
+            logger.warning(
+                "Dropping %d samples with zero total counts before relative "
+                "abundance normalization: %s",
+                len(zero_cols),
+                zero_cols,
+            )
+            abundance_nz = abundance.drop(columns=zero_cols)
+        else:
+            abundance_nz = abundance
+        rel = abundance_nz.div(abundance_nz.sum(axis=0), axis=1)
         out_rel = f"{args.out_prefix}_relative_{target_rank}.tsv"
         rel.to_csv(out_rel, sep="\t", float_format="%.6f")
 

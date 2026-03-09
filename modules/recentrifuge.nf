@@ -34,7 +34,7 @@ process RECENTRIFUGE {
 
     // Find control files with validation
     def control_matches = controls.collect { ctrl ->
-        def match = classifiedreads.find { it.name.contains(ctrl) }
+        def match = classifiedreads.find { it.name.startsWith(ctrl) && ctrl.size() < it.name.size() && (it.name[ctrl.size()] == '.' as char || it.name[ctrl.size()] == '_' as char) }
         if (!match) {
             log.warn "WARNING: No file found matching control '${ctrl}'"
         }
@@ -49,7 +49,7 @@ process RECENTRIFUGE {
 
     // Find sample files with validation
     def sample_matches = samples.collect { sample ->
-        def match = classifiedreads.find { it.name.contains(sample) }
+        def match = classifiedreads.find { it.name.startsWith(sample) && sample.size() < it.name.size() && (it.name[sample.size()] == '.' as char || it.name[sample.size()] == '_' as char) }
         if (!match) {
             log.warn "WARNING: No file found matching sample '${sample}'"
         }
