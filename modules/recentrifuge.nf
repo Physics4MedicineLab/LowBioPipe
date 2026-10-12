@@ -11,68 +11,39 @@ process RECENTRIFUGE {
     label 'process_high'
     publishDir "${params.outdir}/recentrifuge", mode: 'copy'
 
-    conda "bioconda::recentrifuge>=1.12.0"
-    container 'quay.io/biocontainers/recentrifuge:1.12.0--pyhdfd78af_0'
+    conda "bioconda::recentrifuge=2.1.2"
+    container 'quay.io/biocontainers/recentrifuge:2.1.2--pyhdfd78af_0'
 
     input:
-    path classifiedreads
+    tuple val(ids), path(classifiedreads)
     path taxdump
     val samples
     val controls
 
     output:
     path "*.rcf.html", emit: html_reports
-    path "*.rcf.xlsx", emit: rcf_files
+    tuple path("*.rcf.data.tsv"), path("*.rcf.stat.tsv"), emit: rcf_tables
 
     script:
-    // Parse exclusion taxa
-    def exclude_args = file(params.exclude_taxa).readLines()
-        .findAll { it && !it.startsWith('#') }
-        .collect { it.split()[0] }
-        .collect { "-x ${it}" }
-        .join(' ')
+    // Contaminants were already removed by FILTER_TAXA, so no -x exclusions here.
+    // Link each file as <ID>.krk so Recentrifuge names samples exactly by their ID.
+    // Controls go first: rcf treats the first -c N inputs as negative controls.
+    // TSV output (-e TSV) instead of Excel, whose 16,384-column limit is hit at ~500 samples.
+    def file_by_id = [ids, [classifiedreads].flatten()].transpose().collectEntries()
+    def ordered_ids = controls + samples
+    def links = ordered_ids.collect { id -> "ln -s ${file_by_id[id]} ${id}.krk" }.join('\n')
+    def inputs = ordered_ids.collect { id -> "-k ${id}.krk" }.join(' ')
 
-    // Find control files with validation
-    def control_matches = controls.collect { ctrl ->
-        def match = classifiedreads.find { it.name.startsWith(ctrl) && ctrl.size() < it.name.size() && (it.name[ctrl.size()] == '.' as char || it.name[ctrl.size()] == '_' as char) }
-        if (!match) {
-            log.warn "WARNING: No file found matching control '${ctrl}'"
-        }
-        return match
-    }.findAll()
-
-    if (control_matches.size() == 0 && controls.size() > 0) {
-        log.warn "WARNING: No control files matched. Check control IDs against file names."
-    }
-
-    def control_files = control_matches.collect { "-k ${it}" }.join(' ')
-
-    // Find sample files with validation
-    def sample_matches = samples.collect { sample ->
-        def match = classifiedreads.find { it.name.startsWith(sample) && sample.size() < it.name.size() && (it.name[sample.size()] == '.' as char || it.name[sample.size()] == '_' as char) }
-        if (!match) {
-            log.warn "WARNING: No file found matching sample '${sample}'"
-        }
-        return match
-    }.findAll()
-
-    if (sample_matches.size() == 0) {
-        error "ERROR: No sample files matched. Check sample IDs against file names in ${classifiedreads}"
-    }
-
-    def sample_files = sample_matches.collect { "-k ${it}" }.join(' ')
-
-    def num_controls = control_matches.size()
-
-    log.info "Recentrifuge: Processing ${sample_matches.size()} samples with ${num_controls} controls"
+    log.info "Recentrifuge: Processing ${samples.size()} samples with ${controls.size()} controls"
     """
+    ${links}
+
     rcf -n ${taxdump} \\
         -s KRAKEN \\
         -y ${params.recentrifuge_min_score} \\
-        ${exclude_args} \\
-        ${control_files} \\
-        ${sample_files} \\
-        -c ${num_controls} \\
+        ${inputs} \\
+        -c ${controls.size()} \\
+        -e TSV \\
         -o lowbiopipe_recentrifuge.rcf.html
     """
 }

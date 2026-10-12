@@ -8,41 +8,36 @@ Features:
     - Automatic detection of all taxonomic levels
     - Alpha diversity metrics (observed OTUs, Shannon, Simpson, Chao1)
     - Beta diversity (Bray-Curtis, Jaccard, Aitchison)
-    - PCoA ordination plots
-    - Heatmaps with hierarchical clustering
-    - PERMANOVA statistical tests (if groups provided)
+    - PCoA ordination plots (coloured by group if groups provided)
+    - Heatmaps with hierarchical clustering of the most abundant taxa
+    - PERMANOVA and PERMDISP statistical tests (if groups provided)
 
 Usage:
     python diversity_analysis.py --indir abundance_dir --outdir results
-    python diversity_analysis.py --indir . --outdir results --groups groups.tsv
+    python diversity_analysis.py --indir . --outdir results --groups groups.tsv --heatmap-top-n 50
 """
 
 import argparse
+import inspect
 import logging
 import sys
-from typing import Optional, Dict, Tuple, List
 from pathlib import Path
 
-import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 import seaborn as sns
 from scipy.spatial.distance import pdist, squareform
 from skbio import DistanceMatrix
 from skbio.diversity import alpha_diversity, beta_diversity
+from skbio.stats.distance import permanova, permdisp
 from skbio.stats.ordination import pcoa
-from skbio.stats.distance import permanova
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO, format="[%(levelname)s] %(message)s", stream=sys.stderr
 )
 logger = logging.getLogger(__name__)
-
-# Valid taxonomic ranks for validation
-VALID_RANKS = ["species", "genus", "family", "order", "class", "phylum", "kingdom"]
-
-# ======================= helpers =======================
 
 
 def ensure_samples_by_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -141,49 +136,70 @@ def compute_alpha(df_sxf: pd.DataFrame) -> pd.DataFrame:
     return alpha_df
 
 
-def save_alpha_plots(alpha_df: pd.DataFrame, outdir: Path, level: str) -> None:
+def group_labels(
+    sample_ids: pd.Index, groups: dict[str, str] | None
+) -> pd.Series | None:
     """
-    Generate and save alpha diversity visualization plots.
+    Group label for each sample, for plotting.
+
+    Args:
+        sample_ids: Sample IDs
+        groups: Optional sample-to-group mapping
+
+    Returns:
+        Series of group labels ('ungrouped' if missing), or None without groups
+    """
+    if not groups:
+        return None
+    return pd.Series(
+        [groups.get(s, "ungrouped") for s in sample_ids], index=sample_ids, name="group"
+    )
+
+
+def save_alpha_plots(
+    alpha_df: pd.DataFrame,
+    outdir: Path,
+    level: str,
+    groups: dict[str, str] | None = None,
+) -> None:
+    """
+    Generate and save alpha diversity box and violin plots, one box per group.
 
     Args:
         alpha_df: DataFrame with alpha diversity metrics
         outdir: Output directory path
         level: Taxonomic level name for plot titles
+        groups: Optional sample-to-group mapping
     """
     sns.set_theme(style="whitegrid")
+    labels = group_labels(alpha_df.index, groups)
+    y = "group" if labels is not None else None
+    plots = [
+        ("boxplot", "", sns.boxplot, {}),
+        ("violin", " (violin)", sns.violinplot, {"inner": "box"}),
+    ]
     for metric in alpha_df.columns:
-        # Boxplot
-        try:
-            plt.figure(figsize=(10, 6))
-            sns.boxplot(data=alpha_df[metric], orient="h")
-            sns.stripplot(data=alpha_df[metric], orient="h", color="black", size=4)
-            plt.title(f"Alpha Diversity - {metric} - {level}")
-            plt.xlabel(metric)
-            plt.tight_layout()
-            plt.savefig(outdir / f"alpha_{metric}_boxplot_{level}.png", dpi=300)
-        except Exception as e:
-            logger.warning("Failed to save alpha boxplot for %s/%s: %s", metric, level, e)
-        finally:
-            plt.close()
-
-        # Violin plot
-        try:
-            plt.figure(figsize=(10, 6))
-            sns.violinplot(data=alpha_df[metric], orient="h", inner="box")
-            sns.stripplot(data=alpha_df[metric], orient="h", color="black", size=4)
-            plt.title(f"Alpha Diversity - {metric} (violin) - {level}")
-            plt.xlabel(metric)
-            plt.tight_layout()
-            plt.savefig(outdir / f"alpha_{metric}_violin_{level}.png", dpi=300)
-        except Exception as e:
-            logger.warning("Failed to save alpha violin for %s/%s: %s", metric, level, e)
-        finally:
-            plt.close()
+        plot_df = alpha_df[[metric]].assign(group=labels) if y else alpha_df[[metric]]
+        for kind, suffix, plot_fn, kwargs in plots:
+            try:
+                plt.figure(figsize=(10, 6))
+                plot_fn(data=plot_df, x=metric, y=y, orient="h", **kwargs)
+                sns.stripplot(
+                    data=plot_df, x=metric, y=y, orient="h", color="black", size=4
+                )
+                plt.title(f"Alpha Diversity - {metric}{suffix} - {level}")
+                plt.xlabel(metric)
+                plt.tight_layout()
+                plt.savefig(outdir / f"alpha_{metric}_{kind}_{level}.png", dpi=300)
+            except Exception:
+                logger.exception("Failed to save alpha %s for %s/%s", kind, metric, level)
+            finally:
+                plt.close()
 
 
 def compute_beta_and_pcoa(
     df_sxf: pd.DataFrame, metric: str, binarize: bool = False
-) -> Tuple[DistanceMatrix, pd.DataFrame, pd.Series]:
+) -> tuple[DistanceMatrix, pd.DataFrame, pd.Series]:
     """
     Compute beta diversity distance matrix and perform PCoA ordination.
 
@@ -229,7 +245,7 @@ def clr_transform(X: np.ndarray) -> np.ndarray:
 
 def compute_aitchison_and_pcoa(
     df_sxf: pd.DataFrame,
-) -> Tuple[DistanceMatrix, pd.DataFrame, pd.Series]:
+) -> tuple[DistanceMatrix, pd.DataFrame, pd.Series]:
     """
     Compute Aitchison distance (Euclidean distance in CLR space) and PCoA.
 
@@ -260,74 +276,97 @@ def compute_aitchison_and_pcoa(
     return dist, coords, exp
 
 
-def plot_pcoa(coords: pd.DataFrame, exp: pd.Series, out_png: Path, title: str) -> None:
+def plot_pcoa(
+    coords: pd.DataFrame,
+    exp: pd.Series,
+    out_png: Path,
+    title: str,
+    labels: pd.Series | None = None,
+) -> None:
     """
-    Generate and save PCoA ordination plot.
+    Generate and save PCoA ordination plot with sample IDs next to the points.
 
     Args:
         coords: DataFrame with PCoA coordinates (PC1, PC2, ...)
         exp: Series with proportion of variance explained per axis
         out_png: Output file path
         title: Plot title
+        labels: Optional group label per sample, used to colour the points
     """
     try:
         plt.figure(figsize=(7.5, 6.5))
-        plt.scatter(coords["PC1"], coords["PC2"], s=80, alpha=0.9)
+        hue = labels.reindex(coords.index) if labels is not None else None
+        sns.scatterplot(x=coords["PC1"], y=coords["PC2"], hue=hue, s=80, alpha=0.9)
+        for sample, (x, y) in coords[["PC1", "PC2"]].iterrows():
+            plt.annotate(
+                str(sample), (x, y), xytext=(4, 4), textcoords="offset points", fontsize=7
+            )
         plt.xlabel(f"PC1 ({exp.iloc[0]:.2f}%)")
         plt.ylabel(f"PC2 ({exp.iloc[1]:.2f}%)")
         plt.title(f"PCoA - {title}")
         plt.tight_layout()
         plt.savefig(out_png, dpi=300)
-    except Exception as e:
-        logger.warning("Failed to save PCoA plot %s: %s", out_png, e)
+    except Exception:
+        logger.exception("Failed to save PCoA plot %s", out_png)
     finally:
         plt.close()
 
 
-def make_heatmap(df_sxf: pd.DataFrame, out_png: Path, title: str) -> None:
+def make_heatmap(
+    df_sxf: pd.DataFrame, out_png: Path, title: str, top_n: int = 50
+) -> None:
     """
-    Generate hierarchical clustering heatmap.
+    Generate hierarchical clustering heatmap of log1p counts.
 
     Args:
-        df_sxf: DataFrame in samples x features format
+        df_sxf: DataFrame in samples x features format (counts)
         out_png: Output file path
         title: Plot title
+        top_n: Keep the top_n taxa by mean relative abundance (0 = all taxa)
     """
+    if top_n and df_sxf.shape[1] > top_n:
+        rel = df_sxf.div(df_sxf.sum(axis=1), axis=0)
+        df_sxf = df_sxf[rel.mean().nlargest(top_n).index]
+        title = f"{title}, top {top_n} taxa"
     try:
-        g = sns.clustermap(df_sxf, cmap="viridis", figsize=(12, 12))
+        g = sns.clustermap(np.log1p(df_sxf), cmap="viridis", figsize=(12, 12))
         g.fig.suptitle(title, y=1.02)
         g.savefig(out_png, dpi=300)
-    except Exception as e:
-        logger.warning("Failed to save heatmap %s: %s", out_png, e)
-        return
+    except Exception:
+        logger.exception("Failed to save heatmap %s", out_png)
     finally:
         plt.close("all")
 
 
-def run_permanova(
-    dist_matrix: DistanceMatrix, sample_groups: List[str], permutations: int = 999
-) -> object:
+def run_group_test(
+    test,
+    dist_matrix: DistanceMatrix,
+    sample_groups: list[str],
+    permutations: int = 999,
+    seed: int = 42,
+    **kwargs,
+) -> pd.Series:
     """
-    Run PERMANOVA statistical test on distance matrix.
+    Run a scikit-bio grouping test (permanova or permdisp) on a distance matrix.
 
     Args:
+        test: skbio.stats.distance.permanova or skbio.stats.distance.permdisp
         dist_matrix: skbio DistanceMatrix object
         sample_groups: List of group labels for each sample
         permutations: Number of permutations for p-value calculation
+        seed: Random seed for the permutations
+        **kwargs: Extra arguments for the test
 
     Returns:
-        PERMANOVA results object
+        Test results
     """
     df = pd.DataFrame({"group": sample_groups}, index=dist_matrix.ids)
-    group_counts = df["group"].value_counts()
-    small_groups = group_counts[group_counts < 3]
-    if not small_groups.empty:
-        logger.warning(
-            "PERMANOVA: groups with <3 samples may yield unreliable p-values: %s",
-            dict(small_groups),
-        )
-    result = permanova(dist_matrix, df, column="group", permutations=permutations)
-    return result
+    # scikit-bio >= 0.6 ignores the global NumPy seed and takes its own
+    if "seed" in inspect.signature(test).parameters:
+        kwargs["seed"] = seed
+    else:
+        np.random.seed(seed)
+    return test(dist_matrix, df, column="group", permutations=permutations, **kwargs)
 
 
 def save_beta_results(
@@ -337,10 +376,11 @@ def save_beta_results(
     outdir: Path,
     level: str,
     metric_name: str,
-    groups: Optional[Dict[str, str]] = None,
+    groups: dict[str, str] | None = None,
+    seed: int = 42,
 ) -> None:
     """
-    Save beta diversity results (distance matrix, PCoA, optional PERMANOVA).
+    Save beta diversity results (distance matrix, PCoA, optional PERMANOVA/PERMDISP).
 
     Args:
         dist: Distance matrix
@@ -349,7 +389,8 @@ def save_beta_results(
         outdir: Output directory
         level: Taxonomic level
         metric_name: Name of the distance metric
-        groups: Optional sample-to-group mapping for PERMANOVA
+        groups: Optional sample-to-group mapping for plots, PERMANOVA and PERMDISP
+        seed: Random seed for the permutation tests
     """
     # Save distance matrix
     pd.DataFrame(dist.data, index=dist.ids, columns=dist.ids).to_csv(
@@ -365,38 +406,81 @@ def save_beta_results(
         exp,
         outdir / f"pcoa_{metric_name}_{level}.png",
         f"{level} - {metric_name}",
+        group_labels(coords.index, groups),
     )
 
-    # Run PERMANOVA if groups provided
+    # Group tests, on the samples listed in the groups file only
     if groups:
-        sample_groups = [groups.get(s, "ungrouped") for s in dist.ids]
-        result = run_permanova(dist, sample_groups)
-        with open(outdir / f"permanova_{metric_name}_{level}.txt", "w") as f:
-            f.write(str(result))
+        grouped = [s for s in dist.ids if s in groups]
+        ungrouped = [s for s in dist.ids if s not in groups]
+        if ungrouped:
+            logger.warning(
+                "PERMANOVA/PERMDISP %s/%s: samples not in groups file are excluded: %s",
+                level,
+                metric_name,
+                ungrouped,
+            )
+        sample_groups = [groups[s] for s in grouped]
+        group_counts = pd.Series(sample_groups).value_counts()
+        if len(group_counts) < 2 or len(group_counts) == len(grouped):
+            logger.warning(
+                "PERMANOVA/PERMDISP %s/%s skipped: needs >= 2 groups and at least one "
+                "group with >= 2 samples (%d samples in %d groups)",
+                level,
+                metric_name,
+                len(grouped),
+                len(group_counts),
+            )
+            return
+        small_groups = group_counts[group_counts < 3]
+        if not small_groups.empty:
+            logger.warning(
+                "PERMANOVA/PERMDISP %s/%s: groups with <3 samples may yield unreliable "
+                "p-values: %s",
+                level,
+                metric_name,
+                dict(small_groups),
+            )
+        dist_grouped = dist.filter(grouped)
+        # PERMDISP tests equal dispersion: a significant PERMANOVA together with a
+        # significant PERMDISP may reflect spread rather than location differences.
+        # It uses all PCoA axes (scikit-bio >= 0.7.4 otherwise truncates to 10).
+        tests = (
+            ("permanova", permanova, {}),
+            ("permdisp", permdisp, {"dimensions": len(grouped)}),
+        )
+        for name, test, kwargs in tests:
+            try:
+                result = run_group_test(
+                    test, dist_grouped, sample_groups, seed=seed, **kwargs
+                )
+            # ArithmeticError: scikit-bio < 0.7.4 permdisp can divide by zero on tied samples
+            except (ValueError, ArithmeticError) as e:
+                logger.warning("%s %s/%s failed: %s", name, level, metric_name, e)
+                continue
+            with open(outdir / f"{name}_{metric_name}_{level}.txt", "w") as f:
+                f.write(str(result))
 
 
 def infer_level_from_path(p: Path) -> str:
     """
-    Infer taxonomic level from file path.
+    Infer taxonomic level from an abundance table name (<prefix>_counts_<rank>.tsv).
 
     Args:
         p: Path to abundance table
 
     Returns:
-        Inferred taxonomic level or filename stem if not recognized
+        Taxonomic level after '_counts_', or the filename stem if absent
     """
-    stem = p.stem.lower()
-    for k in VALID_RANKS:
-        if k in stem:
-            return k
-    return stem
-
-
-# ======================= pipeline =======================
+    return p.stem.lower().rsplit("_counts_", 1)[-1]
 
 
 def process_table(
-    path: Path, outdir_base: Path, groups: Optional[Dict[str, str]]
+    path: Path,
+    outdir_base: Path,
+    groups: dict[str, str] | None,
+    seed: int = 42,
+    heatmap_top_n: int = 50,
 ) -> None:
     """
     Process a single abundance table through complete diversity analysis.
@@ -404,7 +488,9 @@ def process_table(
     Args:
         path: Path to abundance table (TSV format)
         outdir_base: Base output directory
-        groups: Optional sample-to-group mapping for PERMANOVA
+        groups: Optional sample-to-group mapping for plots, PERMANOVA and PERMDISP
+        seed: Random seed for the permutation tests
+        heatmap_top_n: Number of most abundant taxa in the heatmap (0 = all)
     """
     logger.info("Processing: %s", path)
     level = infer_level_from_path(path)
@@ -428,19 +514,20 @@ def process_table(
     # ---- Alpha ----
     alpha_df = compute_alpha(df_sxf)
     alpha_df.to_csv(outdir / f"alpha_metrics_{level}.tsv", sep="\t")
-    save_alpha_plots(alpha_df, outdir, level)
+    save_alpha_plots(alpha_df, outdir, level, groups)
 
     # ---- Heatmap + clustering (log1p-transformed for visual balance) ----
     make_heatmap(
-        pd.DataFrame(np.log1p(df_sxf.values), index=df_sxf.index, columns=df_sxf.columns),
+        df_sxf,
         outdir / f"heatmap_{level}.png",
         f"Heatmap {level} (log1p)",
+        heatmap_top_n,
     )
 
     # ---- Beta Bray-Curtis ----
     bray_dist, bray_coords, bray_exp = compute_beta_and_pcoa(df_sxf, "braycurtis")
     save_beta_results(
-        bray_dist, bray_coords, bray_exp, outdir, level, "braycurtis", groups
+        bray_dist, bray_coords, bray_exp, outdir, level, "braycurtis", groups, seed
     )
 
     if groups:
@@ -450,26 +537,25 @@ def process_table(
     jacc_dist, jacc_coords, jacc_exp = compute_beta_and_pcoa(
         df_sxf, "jaccard", binarize=True
     )
-    save_beta_results(jacc_dist, jacc_coords, jacc_exp, outdir, level, "jaccard", groups)
+    save_beta_results(
+        jacc_dist, jacc_coords, jacc_exp, outdir, level, "jaccard", groups, seed
+    )
 
     # ---- Beta Aitchison ----
     aitc_dist, aitc_coords, aitc_exp = compute_aitchison_and_pcoa(df_sxf)
     save_beta_results(
-        aitc_dist, aitc_coords, aitc_exp, outdir, level, "aitchison", groups
+        aitc_dist, aitc_coords, aitc_exp, outdir, level, "aitchison", groups, seed
     )
 
     if groups:
         logger.warning(
-            "Note: PERMANOVA p-values for %s are not corrected for multiple "
+            "Note: PERMANOVA/PERMDISP p-values for %s are not corrected for multiple "
             "comparisons (3 metrics tested). Consider Benjamini-Hochberg FDR "
             "correction when interpreting results.",
             level,
         )
 
     logger.info("Done: %s saved to %s", level, outdir)
-
-
-# ======================= CLI =======================
 
 
 def main() -> None:
@@ -480,11 +566,16 @@ def main() -> None:
     )
     ap.add_argument("--outdir", default="diversity_outputs", help="Output directory")
     ap.add_argument(
-        "--groups", help="Optional TSV mapping samples to groups for PERMANOVA"
+        "--groups",
+        help="Optional TSV mapping samples to groups for PERMANOVA, PERMDISP and plots",
     )
     ap.add_argument(
         "--seed", type=int, default=42,
-        help="Random seed for reproducible PERMANOVA permutations (default: 42)",
+        help="Random seed for reproducible PERMANOVA/PERMDISP permutations (default: 42)",
+    )
+    ap.add_argument(
+        "--heatmap-top-n", type=int, default=50,
+        help="Most abundant taxa (by mean relative abundance) in the heatmap; 0 = all (default: 50)",
     )
     args = ap.parse_args()
 
@@ -505,11 +596,13 @@ def main() -> None:
             logger.error("Groups file does not exist: %s", groups_path)
             sys.exit(1)
         try:
+            # dtype=str keeps numeric IDs ('01') matching the abundance-table headers;
+            # gdf["sample"] because gdf.sample is the DataFrame.sample() method
             gdf = pd.read_csv(
-                args.groups, sep="\t", header=None, names=["sample", "group"]
+                args.groups, sep="\t", header=None, names=["sample", "group"], dtype=str
             )
-            groups = dict(zip(gdf.sample, gdf.group))
-            logger.info("Groups loaded for PERMANOVA (%d samples)", len(groups))
+            groups = dict(zip(gdf["sample"].str.strip(), gdf["group"].str.strip()))
+            logger.info("Groups loaded (%d samples)", len(groups))
         except (pd.errors.EmptyDataError, pd.errors.ParserError) as e:
             logger.error("Failed to read groups file: %s", e)
             sys.exit(1)
@@ -520,12 +613,11 @@ def main() -> None:
         logger.error("No abundance tables found in %s", indir)
         sys.exit(1)
 
-    np.random.seed(args.seed)
-    logger.info("Random seed set to %d for reproducible PERMANOVA", args.seed)
+    logger.info("Random seed set to %d for reproducible PERMANOVA/PERMDISP", args.seed)
 
     logger.info("Found %d abundance tables", len(tables))
     for table in tables:
-        process_table(table, outdir_base, groups)
+        process_table(table, outdir_base, groups, args.seed, args.heatmap_top_n)
 
 
 if __name__ == "__main__":

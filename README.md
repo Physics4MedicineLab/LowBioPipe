@@ -6,9 +6,10 @@
 
 **A Nextflow wrapper for statistical analysis of low biomass microbiome data**
 
-[![Nextflow](https://img.shields.io/badge/Nextflow-%E2%89%A523.04.0-brightgreen.svg)](https://www.nextflow.io/)
+[![Nextflow](https://img.shields.io/badge/Nextflow-%E2%89%A525.10.0-brightgreen.svg)](https://www.nextflow.io/)
+[![CI](https://github.com/Physics4MedicineLab/LowBioPipe/actions/workflows/ci.yml/badge.svg)](https://github.com/Physics4MedicineLab/LowBioPipe/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.1-blue.svg)](VERSION)
+[![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)](CHANGELOG.md)
 
 </div>
 
@@ -18,16 +19,16 @@ LowBioPipe is a Nextflow-based computational framework that serves as a wrapper 
 
 ## Pipeline Summary
 
-1. **Contaminant Filtering** - Remove reads assigned to specified taxa from [Kraken2](https://github.com/DerrickWood/kraken2) output
+1. **Contaminant Filtering** - Remove reads assigned to specified taxa from [Kraken2](https://github.com/DerrickWood/kraken2) output (optionally also their descendants, and ancestors up to a chosen rank)
 2. **[Recentrifuge](https://github.com/khyox/recentrifuge) Analysis** - Refined taxonomic profiling with negative control integration
-3. **Abundance Tables** - Generate taxa × samples matrices at species, genus, and phylum levels
-4. **Diversity Analysis** - Alpha/beta diversity, PCoA ordination, clustering heatmaps, PERMANOVA
+3. **Abundance Tables** - Generate taxa × samples matrices at species, genus, and phylum levels, from raw or control-filtered counts
+4. **Diversity Analysis** - Alpha/beta diversity, PCoA ordination, clustering heatmaps, PERMANOVA and PERMDISP, with plots coloured by group
 
 ## Requirements
 
-- Nextflow ≥ 23.04.0
+- Nextflow ≥ 25.10.0
 - Docker, Singularity, or Conda
-- [NCBI taxdump](https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz)
+- [NCBI taxdump](https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz) (downloaded by `install.sh`)
 
 ### Input: nf-core/taxprofiler Output
 
@@ -47,22 +48,37 @@ The `--kraken2_save_readclassifications` flag is required.
 
 ## Installation
 
-Clone the repository and run the installation script:
+Clone the repository and run the installation script. It creates (or updates) the `lowbiopipe` conda environment from `environment.yml`, which includes Nextflow, and downloads the NCBI taxdump into `data/taxdump`, checking it against NCBI's MD5 checksum:
 
 ```bash
 git clone https://github.com/Physics4MedicineLab/LowBioPipe.git
 cd LowBioPipe
 ./install.sh
+conda activate lowbiopipe
 ```
 
 ### Conda Environment
 
-Alternatively, create a conda environment with all dependencies:
+To set up the environment without the script:
 
 ```bash
 conda env create -f environment.yml
 conda activate lowbiopipe
 ```
+
+`environment.yml` pins the versions the pipeline is tested with: Python 3.12, Nextflow 26.04.6, Recentrifuge 2.1.2, pandas 3.0.6, scikit-bio 0.7.4, seaborn 0.13.2.
+
+### Test the installation
+
+The `test` profile runs the whole pipeline on a small synthetic dataset in `test_data/`:
+
+```bash
+nextflow run main.nf -profile test,docker   # or -profile test inside the conda environment
+```
+
+## Example Dataset
+
+An example dataset from the original LowBioPipe study is available on Zenodo: [Shotgun metagenomic sequencing reads of corneal storage solution](https://zenodo.org/records/23105133) ([doi:10.5281/zenodo.23105133](https://doi.org/10.5281/zenodo.23105133)). It contains sequencing reads, so process them with nf-core/taxprofiler first (see [Input: nf-core/taxprofiler Output](#input-nf-coretaxprofiler-output)), then run LowBioPipe on the results.
 
 ## Usage
 
@@ -75,7 +91,7 @@ nextflow run main.nf \
     -profile docker
 ```
 
-For PERMANOVA statistical testing, provide a groups file:
+For PERMANOVA/PERMDISP testing and group-coloured plots, provide a groups file:
 
 ```bash
 nextflow run main.nf \
@@ -89,34 +105,41 @@ nextflow run main.nf \
 
 ## Parameters
 
+Parameters are validated against [`nextflow_schema.json`](nextflow_schema.json) before the run starts. `nextflow run main.nf --help` lists them all, and `--help <parameter>` shows the details for one.
+
 ### Required
 
 | Parameter | Description |
 |-----------|-------------|
 | `--taxprofiler_results` | Path to taxprofiler output directory |
 | `--kraken2_db_name` | Kraken2 database name used in taxprofiler |
+| `--samples` | Sample IDs (comma-separated, at least 2) |
 
 ### Sample Configuration
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `--samples` | Sample IDs (comma-separated) | `[]` |
-| `--controls` | Negative control IDs (comma-separated) | `[]` |
-| `--groups_file` | Sample-to-group mapping for PERMANOVA | `null` |
+| `--controls` | Negative control IDs (comma-separated) | `null` |
+| `--groups_file` | Sample-to-group mapping for PERMANOVA/PERMDISP and plot colours | `null` |
+
+IDs may contain only letters, digits, `.`, `_` and `-`. Each ID must match exactly one Kraken2 file whose name starts with `<ID>.` or `<ID>_` (the longest matching ID wins, so `S1` and `S1_rep2` can coexist). If taxprofiler wrote one file per run, re-run it with `--perform_runmerging`.
 
 ### Reference Data
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `--taxdump` | NCBI taxdump directory | `data/taxdump` |
-| `--exclude_taxa` | Contaminant TaxID file | `config/contaminants_example.txt` |
+| `--taxdump` | NCBI taxdump directory, used by every step | `<pipeline>/data/taxdump` |
+| `--exclude_taxa` | Contaminant TaxID file | `<pipeline>/config/contaminants_example.txt` |
 
 ### Contaminant Filtering
 
+Contaminants are removed once, before Recentrifuge, so these options fully determine what is filtered.
+
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `--filter_include_ancestors` | Also filter ancestor taxa (walking up to root) | `false` |
-| `--filter_include_descendants` | Also filter descendant taxa (walking down tree) | `false` |
+| `--filter_include_ancestors` | Also filter ancestor taxa, up to `--filter_ancestors_max_rank` | `false` |
+| `--filter_ancestors_max_rank` | Highest rank removed by `--filter_include_ancestors` (species … domain). The root and *cellular organisms* are never removed | `genus` |
+| `--filter_include_descendants` | Also filter descendant taxa (strains, subspecies, …) | `false` |
 
 ### Recentrifuge
 
@@ -128,12 +151,25 @@ nextflow run main.nf \
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `--abundance_ranks` | Taxonomic ranks to generate | `['species','genus','phylum']` |
+| `--abundance_ranks` | Taxonomic ranks to generate (comma-separated; use `domain` rather than `superkingdom` with NCBI taxdumps from 2025 on) | `species,genus,phylum` |
+| `--abundance_source` | Counts to tabulate: `auto`, `raw` or `ctrl` (see below) | `auto` |
 | `--abundance_aggregate` | Aggregate taxa to specified rank | `true` |
 | `--abundance_min_count` | Minimum total count threshold | `1` |
 | `--abundance_min_samples` | Minimum samples threshold | `2` |
 | `--abundance_relative` | Generate relative abundance tables | `true` |
 | `--abundance_keep_unranked` | Keep taxa without resolvable rank | `false` |
+
+Abundance tables contain one column per sample, and `--abundance_source` sets what they hold:
+
+- `ctrl`: Recentrifuge's control-filtered counts (its `<sample>_CTRL_SUMMARY` output). The controls themselves are left out. Requires `--controls`.
+- `raw`: raw counts for every input, controls included, for example to compare samples with blanks in the PCoA plots.
+- `auto` (default): `ctrl` when `--controls` are given, `raw` otherwise.
+
+### Diversity Analysis
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `--diversity_heatmap_top_n` | Taxa shown in the clustered heatmap, chosen by mean relative abundance; `0` shows all | `50` |
 
 ### Output
 
@@ -141,12 +177,14 @@ nextflow run main.nf \
 |-----------|-------------|---------|
 | `--outdir` | Output directory | `results` |
 
+Each task's CPUs, memory and time are capped at 16 CPUs, 64 GB and 24 h. To change the caps, set `process.resourceLimits` in a custom config passed with `-c`.
+
 ## Output
 
 ```
 results/
 ├── filtered_reads/          # Filtered Kraken2 classifications
-├── recentrifuge/            # Recentrifuge reports (.html, .xlsx)
+├── recentrifuge/            # Recentrifuge report (.rcf.html) and tables (.rcf.data.tsv, .rcf.stat.tsv)
 ├── abundance/               # Count matrices and metadata
 │   ├── *_counts_*.tsv
 │   ├── *_relative_*.tsv
@@ -165,10 +203,12 @@ results/
         ├── pcoa_braycurtis_*.png         # PCoA plot (Bray-Curtis)
         ├── pcoa_jaccard_*.png            # PCoA plot (Jaccard)
         ├── pcoa_aitchison_*.png          # PCoA plot (Aitchison)
-        ├── heatmap_*.png                 # Hierarchical clustering heatmap
-        ├── permanova_braycurtis_*.txt    # PERMANOVA results (Bray-Curtis)
-        └── permanova_aitchison_*.txt     # PERMANOVA results (Aitchison)
+        ├── heatmap_*.png                 # Hierarchical clustering heatmap (top taxa)
+        ├── permanova_{braycurtis,jaccard,aitchison}_*.txt  # PERMANOVA (group centroids)
+        └── permdisp_{braycurtis,jaccard,aitchison}_*.txt   # PERMDISP (group dispersions)
 ```
+
+With a groups file, the PCoA points and the alpha diversity plots are coloured or split by group. Read PERMANOVA together with PERMDISP: a significant PERMANOVA alongside a significant PERMDISP may reflect differences in spread rather than in location.
 
 ## Input File Formats
 
@@ -178,21 +218,20 @@ results/
 1751056     # Flavobacterium ammonificans
 ```
 
-**Groups file** - Tab-separated, no header:
+**Groups file** - Tab-separated, no header, using the same IDs as `--samples`:
 ```
 sample1    group_A
 sample2    group_A
 sample3    group_B
 sample4    group_B
 ```
+Samples missing from the groups file are left out of PERMANOVA and PERMDISP (with a warning) and are shown as `ungrouped` in the plots.
 
 ## Citation
 
 If you use LowBioPipe, please cite:
 
-```bibtex
-
-```
+*Available soon.*
 
 Please also cite the underlying tools:
 

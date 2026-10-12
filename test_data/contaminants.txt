@@ -1,0 +1,5 @@
+# Test exclusion list
+9606        # Homo sapiens
+    # indented comment line
+
+316         # Pseudomonas stutzeri

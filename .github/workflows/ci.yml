@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Lint and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        # ruff is pinned: new releases enable new default rules
+        run: pip install -r requirements.txt pytest ruff==0.17.0
+      - name: Ruff
+        run: ruff check bin tests
+      - name: Pytest
+        run: pytest tests -v
+
+  pipeline:
+    name: Pipeline test (Nextflow ${{ matrix.nxf_ver }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Minimum supported version (manifest.nextflowVersion) and the latest release
+        nxf_ver: ["25.10.0", "latest-stable"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: nf-core/setup-nextflow@v3
+        with:
+          version: ${{ matrix.nxf_ver }}
+      - name: Nextflow lint
+        run: nextflow lint main.nf modules nextflow.config
+      - name: Run test profile
+        run: nextflow run ${GITHUB_WORKSPACE} -profile test,docker --outdir results
+      - name: Check outputs
+        run: |
+          for f in abundance/abundance_lowbiopipe_recentrifuge_counts_species.tsv \
+                   diversity/species/permanova_braycurtis_species.txt \
+                   diversity/species/permdisp_braycurtis_species.txt; do
+            test -s "results/$f" || { echo "missing: $f"; exit 1; }
+          done
+          # Underscore IDs must stay separate columns and the control must be left out
+          head -1 results/abundance/abundance_lowbiopipe_recentrifuge_counts_species.tsv | grep -q "patient_01.*patient_02"
+          ! head -1 results/abundance/abundance_lowbiopipe_recentrifuge_counts_species.tsv | grep -q BLANK1

@@ -1,28 +1,31 @@
 #!/usr/bin/env python3
 """
-rcf_to_abundance.py - Convert Recentrifuge Excel output to abundance tables
+rcf_to_abundance.py - Convert Recentrifuge detailed output to abundance tables
 
 Part of LowBioPipe - A pipeline for low biomass microbiome analysis
 
-Reads the 'FULL' sheet with unique assignments (UNA counts) and creates
-taxa x samples abundance matrices for specified taxonomic ranks.
+Reads unique assignments (UNA counts) from Recentrifuge's detailed output, either
+TSV (rcf -e TSV: <base>.data.tsv + <base>.stat.tsv) or Excel (FULL sheet), and
+creates taxa x samples abundance matrices for specified taxonomic ranks. Names,
+ranks and lineages come from the same NCBI taxdump given to Recentrifuge.
 
 Usage:
-    python rcf_to_abundance.py recentrifuge_output.rcf.xlsx --min-samples 2 --rank species
+    python rcf_to_abundance.py recentrifuge_output.rcf.data.tsv --taxdump taxdump --min-samples 2 --rank species
 
     # Aggregate species to phylum level:
-    python rcf_to_abundance.py recentrifuge_output.rcf.xlsx --rank phylum --aggregate
+    python rcf_to_abundance.py recentrifuge_output.rcf.data.tsv --taxdump taxdump --rank phylum --aggregate
+
+    # Use Recentrifuge's control-filtered counts (requires a run with negative controls):
+    python rcf_to_abundance.py recentrifuge_output.rcf.data.tsv --taxdump taxdump --source ctrl --controls BLANK1
 """
 
-import sys
 import argparse
 import logging
+import sys
 from pathlib import Path
-from typing import Optional, Tuple, Dict, List, Any
+from typing import Any
 
 import pandas as pd
-
-from ete3.ncbi_taxonomy import NCBITaxa
 
 # Configure logging
 logging.basicConfig(
@@ -39,9 +42,31 @@ def parse_args() -> argparse.Namespace:
         Parsed argument namespace
     """
     ap = argparse.ArgumentParser(
-        description="Build abundance table (taxa x samples) from Recentrifuge Excel output (FULL sheet, UNA counts)."
+        description="Build abundance table (taxa x samples) from Recentrifuge detailed output (UNA counts)."
     )
-    ap.add_argument("rcf_file", help="Path to Recentrifuge .rcf.xlsx file")
+    ap.add_argument(
+        "rcf_file",
+        help="Recentrifuge .rcf.data.tsv (with .rcf.stat.tsv next to it) or .rcf.xlsx file",
+    )
+    ap.add_argument(
+        "--taxdump",
+        type=Path,
+        required=True,
+        help="NCBI taxdump directory (nodes.dmp, names.dmp) used for the Recentrifuge run",
+    )
+    ap.add_argument(
+        "--source",
+        choices=["raw", "ctrl"],
+        default="raw",
+        help="Counts to use: 'raw' sample counts, or Recentrifuge's control-filtered "
+        "'<sample>_CTRL_SUMMARY' counts (controls are then left out). Default: raw",
+    )
+    ap.add_argument(
+        "--controls",
+        nargs="*",
+        help="Negative-control IDs; with --source ctrl, any other sample without "
+        "control-filtered counts is reported as dropped",
+    )
     ap.add_argument(
         "--rank",
         default="species",
@@ -74,11 +99,6 @@ def parse_args() -> argparse.Namespace:
         help="Also write relative-abundance table (per-sample proportions)",
     )
     ap.add_argument(
-        "--ncbi-update",
-        action="store_true",
-        help="Run NCBITaxa.update_taxonomy_database() before mapping",
-    )
-    ap.add_argument(
         "--keep-unranked",
         action="store_true",
         help="Keep taxa without resolvable rank/TaxID when --rank != any (default: drop)",
@@ -86,241 +106,187 @@ def parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
-def get_sample_name_from_path(path_text: str) -> str:
+def load_taxonomy(
+    taxdump: Path,
+) -> tuple[dict[int, int], dict[int, str], dict[int, str]]:
     """
-    Extract sample name from file path.
+    Load parent, rank and scientific-name maps from an NCBI taxdump directory.
 
     Args:
-        path_text: File path string
+        taxdump: Directory containing nodes.dmp and names.dmp
 
     Returns:
-        Extracted sample name
+        Tuple of (taxid -> parent taxid, taxid -> rank, taxid -> scientific name)
     """
-    tail = str(path_text).strip().split("/")[-1]
-    return tail.split("_")[0] if "_" in tail else tail
-
-
-def get_ancestor_at_rank(
-    ncbi: NCBITaxa, taxid: int, target_rank: str, max_depth: int = 50
-) -> Tuple[Optional[int], Optional[str], Optional[str]]:
-    """
-    Walk up the taxonomy tree to find an ancestor at the specified rank.
-
-    Args:
-        ncbi: NCBITaxa instance
-        taxid: Starting taxid
-        target_rank: Rank to find (e.g., 'phylum', 'genus')
-        max_depth: Maximum steps to prevent infinite loops
-
-    Returns:
-        Tuple of (ancestor_taxid, ancestor_name, ancestor_rank) or (None, None, None) if not found
-    """
-    current = taxid
-    for _ in range(max_depth):
-        try:
-            # Get rank of current taxid
-            rank_dict = ncbi.get_rank([current])
-            current_rank = rank_dict.get(current)
-
-            # If we found the target rank, return this taxid
-            if current_rank == target_rank:
-                name_dict = ncbi.get_taxid_translator([current])
-                name = name_dict.get(current, f"TaxID_{current}")
-                return (current, name, current_rank)
-
-            # Get parent
-            lineage = ncbi.get_lineage(current)
-            if not lineage or len(lineage) <= 1:
-                break  # Reached root
-
-            # Check if any ancestor in lineage has the target rank
-            for ancestor_id in reversed(
-                lineage[:-1]
-            ):  # Exclude current, walk backwards
-                rank_dict = ncbi.get_rank([ancestor_id])
-                ancestor_rank = rank_dict.get(ancestor_id)
-                if ancestor_rank == target_rank:
-                    name_dict = ncbi.get_taxid_translator([ancestor_id])
-                    name = name_dict.get(ancestor_id, f"TaxID_{ancestor_id}")
-                    return (ancestor_id, name, ancestor_rank)
-
-            break  # No ancestor with target rank found in lineage
-
-        except (KeyError, ValueError, TypeError) as e:
-            logger.debug("Error looking up ancestor for taxid %d: %s", taxid, e)
-            break
-
-    return (None, None, None)
-
-
-def read_recentrifuge_excel(excel_path: str, sheet_name: str = "FULL") -> pd.DataFrame:
-    """
-    Read Recentrifuge Excel file from FULL sheet with unique assignments.
-
-    The FULL sheet has structure:
-    - Column 0: "Samples" (taxon IDs)
-    - For each sample: 3 columns (sample_name, UNA_count, other)
-    - Row 0: metadata ("Stats", "cnt", etc.) - skip this
-    - Row 1+: actual data
-
-    Args:
-        excel_path: Path to Recentrifuge Excel file
-        sheet_name: Sheet name to read (default: 'FULL')
-
-    Returns:
-        DataFrame with 'Taxon' column and sample columns with UNA counts
-    """
-    try:
-        # Read the sheet
-        df_raw = pd.read_excel(excel_path, sheet_name=sheet_name, engine="openpyxl")
-
-        # Skip first row if it contains "Stats" metadata
-        if len(df_raw) > 0 and df_raw.iloc[0, 0] == "Stats":
-            df_raw = df_raw.iloc[1:].reset_index(drop=True)
-
-        # Identify sample columns and their UNA count columns
-        sample_data: Dict[str, Any] = {}
-        taxon_col = df_raw.columns[0]  # Should be "Samples"
-
-        i = 1  # Start from column 1 (after "Samples")
-        while i < len(df_raw.columns):
-            col = df_raw.columns[i]
-
-            # Check if this is a sample column (not "Unnamed")
-            if not str(col).startswith("Unnamed"):
-                sample_name = get_sample_name_from_path(col)
-
-                # The UNA count is in the next column (first Unnamed after sample name)
-                if i + 1 < len(df_raw.columns):
-                    una_col = df_raw.columns[i + 1]
-                    sample_data[sample_name] = una_col
-                    i += 3  # Skip to next sample (sample + 2 unnamed columns)
-                else:
-                    i += 1
-            else:
-                i += 1
-
-        # Validate detected structure
-        if not sample_data:
-            logger.error(
-                "No samples detected in sheet '%s'. "
-                "Expected columns with sample file paths followed by 'Unnamed' columns.",
-                sheet_name,
-            )
+    parent: dict[int, int] = {}
+    rank: dict[int, str] = {}
+    name: dict[int, str] = {}
+    for dmp in ("nodes.dmp", "names.dmp"):
+        if not (taxdump / dmp).exists():
+            logger.error("%s not found in taxdump directory %s", dmp, taxdump)
             sys.exit(1)
 
-        total_data_cols = len(df_raw.columns) - 1  # Subtract taxon column
-        expected_cols = len(sample_data) * 3
-        if total_data_cols != expected_cols:
-            logger.warning(
-                "Column count mismatch: %d data columns for %d samples "
-                "(expected %d = %d samples x 3). "
-                "Recentrifuge Excel format may have changed.",
-                total_data_cols,
-                len(sample_data),
-                expected_cols,
-                len(sample_data),
-            )
+    with open(taxdump / "nodes.dmp") as f:
+        for line in f:
+            fields = line.split("\t|\t", 3)
+            taxid = int(fields[0])
+            parent[taxid] = int(fields[1])
+            rank[taxid] = fields[2]
 
-        # Create clean dataframe with taxon IDs and UNA counts
-        result_df = pd.DataFrame()
-        result_df["Taxon"] = df_raw[taxon_col]
+    with open(taxdump / "names.dmp") as f:
+        for line in f:
+            fields = line.rstrip("\t|\n").split("\t|\t")
+            if fields[3] == "scientific name":
+                name[int(fields[0])] = fields[1]
 
-        for sample_name, una_col in sample_data.items():
-            result_df[sample_name] = (
-                pd.to_numeric(df_raw[una_col], errors="coerce").fillna(0).astype(int)
-            )
-
-        logger.info(
-            "Successfully read sheet '%s': %d taxa x %d samples",
-            sheet_name,
-            len(result_df),
-            len(sample_data),
-        )
-        return result_df
-
-    except FileNotFoundError:
-        logger.error("Excel file not found: %s", excel_path)
-        sys.exit(1)
-    except KeyError as e:
-        # Try to list available sheets
-        try:
-            import openpyxl
-
-            wb = openpyxl.load_workbook(excel_path, read_only=True)
-            available_sheets = wb.sheetnames
-            logger.error(
-                "Sheet '%s' not found. Available sheets: %s",
-                sheet_name,
-                available_sheets,
-            )
-        except ImportError:
-            logger.error("Sheet '%s' not found: %s", sheet_name, e)
-        sys.exit(1)
-    except ValueError as e:
-        logger.error("Failed to parse Excel file: %s", e)
-        sys.exit(1)
+    logger.info("Loaded %d taxa from %s", len(parent), taxdump)
+    return parent, rank, name
 
 
-def get_taxon_info(
-    ncbi: NCBITaxa,
-    taxid: int,
-    name_cache: Dict[int, str],
-    rank_cache: Dict[int, Optional[str]],
-) -> Tuple[str, Optional[str]]:
+def ancestor_at_rank(
+    taxid: int, target_rank: str, parent: dict[int, int], rank: dict[int, str]
+) -> int | None:
     """
-    Get taxon name and rank from NCBI, using caches for efficiency.
+    Walk up the taxonomy from taxid (inclusive) to the first node at target_rank.
 
     Args:
-        ncbi: NCBITaxa instance
-        taxid: Taxonomy ID
-        name_cache: Cache for taxon names
-        rank_cache: Cache for taxon ranks
+        taxid: Starting taxid
+        target_rank: Rank to find (e.g., 'phylum', 'genus')
+        parent: taxid -> parent taxid map
+        rank: taxid -> rank map
 
     Returns:
-        Tuple of (taxon_name, taxon_rank)
+        Taxid of the ancestor at target_rank, or None if the lineage has none
     """
-    # Get name
-    if taxid not in name_cache:
-        try:
-            name_dict = ncbi.get_taxid_translator([taxid])
-            name_cache[taxid] = name_dict.get(taxid, f"TaxID_{taxid}")
-        except (KeyError, ValueError) as e:
-            logger.debug("Failed to get name for taxid %d: %s", taxid, e)
-            name_cache[taxid] = f"TaxID_{taxid}"
+    seen = set()
+    while taxid in parent and taxid not in seen:
+        if rank.get(taxid) == target_rank:
+            return taxid
+        seen.add(taxid)
+        taxid = parent[taxid]
+    return None
 
-    # Get rank
-    if taxid not in rank_cache:
-        try:
-            rank_dict = ncbi.get_rank([taxid])
-            rank_cache[taxid] = rank_dict.get(taxid, None)
-        except (KeyError, ValueError) as e:
-            logger.debug("Failed to get rank for taxid %d: %s", taxid, e)
-            rank_cache[taxid] = None
 
-    return name_cache[taxid], rank_cache[taxid]
+def read_recentrifuge(
+    rcf_path: str, source: str = "raw", controls: list[str] | None = None
+) -> pd.DataFrame:
+    """
+    Read UNA counts per sample from Recentrifuge's detailed output.
+
+    Accepts the TSV output (<base>.data.tsv, with <base>.stat.tsv next to it) or
+    the FULL sheet of the Excel output. Both have one block of columns (cnt, una,
+    sco) per sample under a sample-name header, and list Recentrifuge's derived
+    pseudo-samples (<sample>_CTRL_<rank>, <sample>_EXCLUSIVE_*, SHARED_*,
+    CONTROL_SHARED_*, ...) next to the raw ones. Raw sample names are taken from
+    the sample statistics (.stat.tsv or '_sample_stats' sheet) and columns are
+    selected by exact (sample, 'una') header match.
+
+    Args:
+        rcf_path: Path to Recentrifuge .data.tsv or .xlsx file
+        source: 'raw' for raw sample counts, 'ctrl' for each sample's
+            control-filtered '<sample>_CTRL_SUMMARY' counts
+        controls: Negative-control IDs, to tell controls apart from samples that
+            lost all their reads to control filtering
+
+    Returns:
+        DataFrame with 'Taxon' column and one UNA-count column per sample
+    """
+    try:
+        if rcf_path.endswith(".data.tsv"):
+            stats_path = rcf_path[: -len(".data.tsv")] + ".stat.tsv"
+            raw_samples = [
+                str(s)
+                for s in pd.read_csv(stats_path, sep="\t", index_col=0, nrows=0).columns
+            ]
+            sheet = pd.read_csv(rcf_path, sep="\t", header=None, dtype=str)
+        else:
+            raw_samples = [
+                str(s)
+                for s in pd.read_excel(
+                    rcf_path, sheet_name="_sample_stats", index_col=0, engine="openpyxl"
+                ).columns
+            ]
+            sheet = pd.read_excel(
+                rcf_path, sheet_name="FULL", header=None, engine="openpyxl"
+            )
+    except FileNotFoundError as e:
+        logger.error("Recentrifuge output not found: %s", e.filename or rcf_path)
+        sys.exit(1)
+    except ValueError as e:  # includes a missing Excel sheet
+        logger.error("Failed to read Recentrifuge output %s: %s", rcf_path, e)
+        sys.exit(1)
+
+    # Row 0: sample names (repeated, or merged in Excel, across their stat columns),
+    # row 1: stat names, row 2: index name ('Id'), rows 3+: one taxon per row
+    header_samples = sheet.iloc[0].ffill().astype(str)
+    header_stats = sheet.iloc[1].astype(str)
+    una_column = {
+        sample: col
+        for col, (sample, stat) in enumerate(zip(header_samples, header_stats))
+        if stat == "una"
+    }
+    data = sheet.iloc[3:]
+
+    result_df = pd.DataFrame({"Taxon": data[0].values})
+    skipped = []
+    for sample in raw_samples:
+        column_name = sample if source == "raw" else f"{sample}_CTRL_SUMMARY"
+        if column_name not in una_column:
+            skipped.append(sample)
+            continue
+        result_df[sample] = (
+            pd.to_numeric(data[una_column[column_name]], errors="coerce")
+            .fillna(0)
+            .astype(int)
+            .values
+        )
+
+    if skipped:
+        if source == "raw":
+            logger.error("Raw samples missing from %s: %s", rcf_path, skipped)
+            sys.exit(1)
+        # Controls never get a CTRL summary; a sample loses it only if nothing survived filtering
+        if controls is None:
+            logger.info("No control-filtered counts (controls or empty samples): %s", skipped)
+        else:
+            left_out = [s for s in skipped if s in controls]
+            dropped = [s for s in skipped if s not in controls]
+            if left_out:
+                logger.info("Controls left out of the tables: %s", left_out)
+            if dropped:
+                logger.warning(
+                    "Samples dropped: all their reads were removed by control filtering: %s",
+                    dropped,
+                )
+
+    if result_df.shape[1] == 1:
+        logger.error("No '%s' sample columns found in %s", source, rcf_path)
+        sys.exit(1)
+
+    logger.info(
+        "Read Recentrifuge output (%s counts): %d taxa x %d samples",
+        source,
+        len(result_df),
+        result_df.shape[1] - 1,
+    )
+    return result_df
 
 
 def main() -> None:
     """Main entry point for abundance table generation."""
     args = parse_args()
 
-    # Initialize NCBI taxonomy database
-    ncbi = NCBITaxa()
-    if args.ncbi_update:
-        try:
-            ncbi.update_taxonomy_database()
-        except Exception as e:
-            logger.warning("Warning updating NCBITaxa DB: %s", e)
+    # Load the same taxonomy Recentrifuge used
+    parent, taxid2rank, taxid2name = load_taxonomy(args.taxdump)
 
-    # Read the Excel file
+    # Read the Recentrifuge output
     file_path = Path(args.rcf_file)
     if not file_path.exists():
         logger.error("File not found: %s", args.rcf_file)
         sys.exit(1)
 
     # Read clean dataframe: 'Taxon' column + sample columns with UNA counts
-    df_clean = read_recentrifuge_excel(args.rcf_file)
+    df_clean = read_recentrifuge(args.rcf_file, args.source, args.controls)
 
     # Get sample names (all columns except 'Taxon')
     sample_names = [col for col in df_clean.columns if col != "Taxon"]
@@ -332,10 +298,7 @@ def main() -> None:
     )
     logger.info("Mode: %s at rank '%s'", mode, target_rank)
 
-    taxid2rank_cache: Dict[int, Optional[str]] = {}
-    taxid2name_cache: Dict[int, str] = {}
-
-    records: List[Dict[str, Any]] = []
+    records: list[dict[str, Any]] = []
 
     # Process each row (each taxon)
     for idx, row in df_clean.iterrows():
@@ -351,10 +314,9 @@ def main() -> None:
         except (ValueError, TypeError):
             continue
 
-        # Get taxon name and rank from NCBI
-        taxon_name, resolved_rank = get_taxon_info(
-            ncbi, taxid, taxid2name_cache, taxid2rank_cache
-        )
+        # Get taxon name and rank from the taxdump
+        taxon_name = taxid2name.get(taxid, f"TaxID_{taxid}")
+        resolved_rank = taxid2rank.get(taxid)
 
         # Determine which taxon to use (original or ancestor)
         final_taxid = taxid
@@ -364,15 +326,13 @@ def main() -> None:
         # Handle aggregation mode
         if args.aggregate and target_rank != "any":
             # Find ancestor at target rank
-            ancestor_taxid, ancestor_name, ancestor_rank = get_ancestor_at_rank(
-                ncbi, taxid, target_rank
-            )
+            ancestor_taxid = ancestor_at_rank(taxid, target_rank, parent, taxid2rank)
 
             if ancestor_taxid is not None:
                 # Use ancestor for aggregation
                 final_taxid = ancestor_taxid
-                final_name = ancestor_name
-                final_rank = ancestor_rank
+                final_name = taxid2name.get(ancestor_taxid, f"TaxID_{ancestor_taxid}")
+                final_rank = target_rank
             else:
                 # No ancestor at target rank found, skip this taxon
                 continue
@@ -382,9 +342,7 @@ def main() -> None:
             if target_rank == "any":
                 keep_node = True
             else:
-                if resolved_rank == target_rank:
-                    keep_node = True
-                elif args.keep_unranked and resolved_rank is None:
+                if resolved_rank == target_rank or args.keep_unranked and resolved_rank is None:
                     keep_node = True
 
             if not keep_node:
@@ -436,6 +394,15 @@ def main() -> None:
         presence = (abundance > 0).sum(axis=1)
         abundance = abundance.loc[presence >= args.min_samples]
 
+    if abundance.empty:
+        logger.error(
+            "No taxa at rank '%s' pass --min-count %d and --min-samples %d",
+            target_rank,
+            args.min_count,
+            args.min_samples,
+        )
+        sys.exit(1)
+
     out_counts = f"{args.out_prefix}_counts_{target_rank}.tsv"
     abundance.to_csv(out_counts, sep="\t")
 
@@ -456,7 +423,7 @@ def main() -> None:
         out_rel = f"{args.out_prefix}_relative_{target_rank}.tsv"
         rel.to_csv(out_rel, sep="\t", float_format="%.6f")
 
-    meta_rows: List[Dict[str, Any]] = []
+    meta_rows: list[dict[str, Any]] = []
     for taxon_label, sub in long_df.groupby("Taxon"):
         if taxon_label not in abundance.index:
             continue

@@ -13,21 +13,37 @@ Usage:
                      --indir /path/to/per-read-files \
                      --outdir filtered_reads
 
-    # To also filter ancestors and descendants:
+    # To also filter ancestors (up to genus) and descendants:
     ./filter_taxa.py --taxdump /path/to/taxdump \
                      --exclude exclude_taxids.txt \
                      --indir /path/to/per-read-files \
                      --outdir filtered_reads \
                      --include-ancestors \
+                     --ancestors-max-rank genus \
                      --include-descendants
 """
 
 import argparse
+import re
 import sys
-from pathlib import Path
-from collections import defaultdict, deque
-from typing import Set, Dict, List, Tuple
 import time
+from collections import defaultdict, deque
+from pathlib import Path
+
+# Major ranks from lowest to highest; the ancestor walk never goes past --ancestors-max-rank
+MAJOR_RANKS = ["species", "genus", "family", "order", "class", "phylum", "kingdom", "domain"]
+# NCBI renamed 'superkingdom' to 'domain' in 2025; older taxdumps still use it
+RANK_ALIASES = {"superkingdom": "domain"}
+# root and 'cellular organisms': never removed, whatever the cap
+ROOT_TAXIDS = {1, 131567}
+# Kraken2 taxid column: '9606', or 'Homo sapiens (taxid 9606)' with --use-names
+TAXID_FIELD = re.compile(r"(\d+)|.*\(taxid (\d+)\)")
+
+
+def rank_level(rank: str) -> int:
+    """Position of a rank in MAJOR_RANKS, or -1 for minor ranks and 'no rank'."""
+    rank = RANK_ALIASES.get(rank, rank)
+    return MAJOR_RANKS.index(rank) if rank in MAJOR_RANKS else -1
 
 
 class TaxonomyTree:
@@ -35,11 +51,11 @@ class TaxonomyTree:
 
     def __init__(self, taxdump_dir: Path):
         """Initialize taxonomy tree from NCBI taxdump directory."""
-        self.parent: Dict[int, int] = {}  # taxid -> parent_taxid
-        self.children: Dict[int, List[int]] = defaultdict(
+        self.parent: dict[int, int] = {}  # taxid -> parent_taxid
+        self.children: dict[int, list[int]] = defaultdict(
             list
         )  # taxid -> [child_taxids]
-        self.rank: Dict[int, str] = {}  # taxid -> rank name
+        self.rank: dict[int, str] = {}  # taxid -> rank name
         self._load_nodes(taxdump_dir / "nodes.dmp")
 
     def _load_nodes(self, nodes_file: Path):
@@ -74,21 +90,30 @@ class TaxonomyTree:
 
         print(f"  Loaded {count:,} taxa from taxonomy", file=sys.stderr)
 
-    def get_ancestors(self, taxid: int) -> Set[int]:
-        """Get all ancestors of a taxid (including itself), walking up to root."""
+    def get_ancestors(self, taxid: int, max_rank: str = "genus") -> set[int]:
+        """
+        Get ancestors of a taxid (including itself), walking up to max_rank.
+
+        The node at max_rank is included; the walk stops before any major rank
+        above it and never reaches the root, so e.g. reads assigned to Bacteria
+        are never removed.
+        """
+        cap = rank_level(max_rank)
         ancestors = set()
         current = taxid
 
         while current in self.parent and current not in ancestors:
-            ancestors.add(current)
-            parent = self.parent[current]
-            if parent == current:  # Root node
+            level = rank_level(self.rank.get(current))
+            if current != taxid and (current in ROOT_TAXIDS or level > cap):
                 break
-            current = parent
+            ancestors.add(current)
+            if level >= cap or self.parent[current] == current:
+                break
+            current = self.parent[current]
 
         return ancestors
 
-    def get_descendants(self, taxid: int) -> Set[int]:
+    def get_descendants(self, taxid: int) -> set[int]:
         """Get all descendants of a taxid (including itself) via BFS."""
         descendants = set()
         queue = deque([taxid])
@@ -108,17 +133,19 @@ class TaxonomyTree:
 
     def expand_forbidden_taxa(
         self,
-        exclude_taxids: List[int],
+        exclude_taxids: list[int],
         include_ancestors: bool = False,
         include_descendants: bool = False,
-    ) -> Set[int]:
+        ancestors_max_rank: str = "genus",
+    ) -> set[int]:
         """
         Build forbidden taxa set from exclusion list.
 
         Args:
             exclude_taxids: List of taxids to exclude
-            include_ancestors: If True, also exclude all ancestors (walk up tree)
+            include_ancestors: If True, also exclude ancestors up to ancestors_max_rank
             include_descendants: If True, also exclude all descendants (walk down tree)
+            ancestors_max_rank: Highest rank removed when include_ancestors is set
 
         Returns:
             Set of all forbidden taxids
@@ -127,9 +154,9 @@ class TaxonomyTree:
 
         mode_desc = "exact taxids"
         if include_ancestors and include_descendants:
-            mode_desc = "exact taxids + ancestors + descendants"
+            mode_desc = f"exact taxids + ancestors up to {ancestors_max_rank} + descendants"
         elif include_ancestors:
-            mode_desc = "exact taxids + ancestors"
+            mode_desc = f"exact taxids + ancestors up to {ancestors_max_rank}"
         elif include_descendants:
             mode_desc = "exact taxids + descendants"
 
@@ -149,30 +176,30 @@ class TaxonomyTree:
             # Always include the exact taxid
             to_add = {taxid}
 
-            # Optionally include ancestors (walk up)
-            if include_ancestors:
-                ancestors = self.get_ancestors(taxid)
-                to_add.update(ancestors)
+            # Optionally include ancestors (walk up to the cap rank)
+            ancestors = (
+                self.get_ancestors(taxid, ancestors_max_rank) - {taxid}
+                if include_ancestors
+                else set()
+            )
+            to_add.update(ancestors)
 
             # Optionally include descendants (walk down)
-            if include_descendants:
-                descendants = self.get_descendants(taxid)
-                to_add.update(descendants)
+            descendants = (
+                self.get_descendants(taxid) - {taxid} if include_descendants else set()
+            )
+            to_add.update(descendants)
 
             forbidden.update(to_add)
 
             rank_name = self.rank.get(taxid, "unknown")
 
             if include_ancestors or include_descendants:
-                anc_count = len(self.get_ancestors(taxid)) if include_ancestors else 0
-                desc_count = (
-                    len(self.get_descendants(taxid)) if include_descendants else 0
-                )
                 parts = []
                 if include_ancestors:
-                    parts.append(f"+{anc_count} ancestors")
+                    parts.append(f"+{len(ancestors)} ancestors")
                 if include_descendants:
-                    parts.append(f"+{desc_count} descendants")
+                    parts.append(f"+{len(descendants)} descendants")
                 extra = " (" + ", ".join(parts) + ")" if parts else ""
                 print(
                     f"  [{i}/{len(exclude_taxids)}] TaxID {taxid} ({rank_name}){extra}",
@@ -188,7 +215,7 @@ class TaxonomyTree:
         return forbidden
 
 
-def load_exclude_taxids(exclude_file: Path) -> List[int]:
+def load_exclude_taxids(exclude_file: Path) -> list[int]:
     """Load taxids from exclusion file (one per line)."""
     if not exclude_file.exists():
         sys.exit(f"ERROR: Exclusion file not found: {exclude_file}")
@@ -219,8 +246,8 @@ def load_exclude_taxids(exclude_file: Path) -> List[int]:
 
 
 def filter_classified_reads(
-    input_file: Path, output_file: Path, forbidden_taxa: Set[int]
-) -> Tuple[int, int, int]:
+    input_file: Path, output_file: Path, forbidden_taxa: set[int]
+) -> tuple[int, int, int, int]:
     """
     Filter a Kraken2 classified reads file, removing forbidden taxa.
 
@@ -243,13 +270,14 @@ def filter_classified_reads(
                 retained_reads += 1
                 continue
 
-            try:
-                taxid = int(parts[2])
-            except (ValueError, IndexError):
+            # Plain TaxID, or 'Homo sapiens (taxid 9606)' when Kraken2 ran with --use-names
+            match = TAXID_FIELD.fullmatch(parts[2].strip())
+            if not match:
                 malformed_count += 1
                 fout.write(line)
                 retained_reads += 1
                 continue
+            taxid = int(match.group(1) or match.group(2))
 
             # Filter out forbidden taxa
             if taxid in forbidden_taxa:
@@ -270,7 +298,7 @@ def filter_classified_reads(
 def process_directory(
     input_dir: Path,
     output_dir: Path,
-    forbidden_taxa: Set[int],
+    forbidden_taxa: set[int],
     pattern: str = "*.classifiedreads.txt",
 ):
     """Process all classified reads files in a directory."""
@@ -305,7 +333,7 @@ def process_directory(
         )
 
         # Filter the file
-        total, removed, retained, malformed = filter_classified_reads(
+        total, removed, retained, _malformed = filter_classified_reads(
             input_file, output_file, forbidden_taxa
         )
 
@@ -352,12 +380,13 @@ Example usage:
            --indir kraken2_reads \\
            --outdir filtered_reads
 
-  # Also filter ancestors and descendants:
+  # Also filter ancestors (up to genus) and descendants:
   %(prog)s --taxdump /path/to/taxdump \\
            --exclude exclude_taxids.txt \\
            --indir kraken2_reads \\
            --outdir filtered_reads \\
            --include-ancestors \\
+           --ancestors-max-rank genus \\
            --include-descendants
 
 The exclusion file should contain one taxid per line:
@@ -365,8 +394,9 @@ The exclusion file should contain one taxid per line:
   1751056  # Flavobacterium ammonificans
   297      # Hydrogenophilus thermoluteolus
 
-Input files should be Kraken2 per-read format (tab-separated):
-  readID<TAB>taxid<TAB>score
+Input files should be Kraken2 per-read output (tab-separated):
+  C/U<TAB>readID<TAB>taxid<TAB>length<TAB>LCA k-mer mapping
+  (the taxid column may also be "Name (taxid N)", as written by Kraken2 --use-names)
 
 Output files will have '.filtered' appended before the extension.
         """,
@@ -406,7 +436,15 @@ Output files will have '.filtered' appended before the extension.
     parser.add_argument(
         "--include-ancestors",
         action="store_true",
-        help="Also exclude all ancestor taxa (walking up to root). Default: False",
+        help="Also exclude ancestor taxa, up to --ancestors-max-rank. Default: False",
+    )
+
+    parser.add_argument(
+        "--ancestors-max-rank",
+        choices=MAJOR_RANKS + ["superkingdom"],
+        default="genus",
+        help="Highest rank removed by --include-ancestors; the root and "
+        "'cellular organisms' are never removed. Default: genus",
     )
 
     parser.add_argument(
@@ -446,6 +484,7 @@ def main():
         exclude_taxids,
         include_ancestors=args.include_ancestors,
         include_descendants=args.include_descendants,
+        ancestors_max_rank=args.ancestors_max_rank,
     )
 
     # Process all files

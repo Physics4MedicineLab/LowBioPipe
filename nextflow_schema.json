@@ -1,0 +1,233 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://raw.githubusercontent.com/Physics4MedicineLab/LowBioPipe/main/nextflow_schema.json",
+    "title": "LowBioPipe parameters",
+    "description": "Post-taxprofiler processing for low biomass microbiome analysis",
+    "type": "object",
+    "$defs": {
+        "input_output_options": {
+            "title": "Input/output options",
+            "type": "object",
+            "fa_icon": "fas fa-terminal",
+            "required": [
+                "taxprofiler_results",
+                "kraken2_db_name",
+                "samples"
+            ],
+            "properties": {
+                "taxprofiler_results": {
+                    "type": "string",
+                    "format": "directory-path",
+                    "exists": true,
+                    "description": "nf-core/taxprofiler output directory (run with --run_kraken2 --kraken2_save_readclassifications).",
+                    "fa_icon": "fas fa-folder-open"
+                },
+                "kraken2_db_name": {
+                    "type": "string",
+                    "description": "Name of the Kraken2 database used in taxprofiler (subdirectory of <taxprofiler_results>/kraken2/).",
+                    "fa_icon": "fas fa-database"
+                },
+                "outdir": {
+                    "type": "string",
+                    "format": "directory-path",
+                    "default": "results",
+                    "description": "Output directory.",
+                    "fa_icon": "fas fa-folder-open"
+                }
+            }
+        },
+        "sample_options": {
+            "title": "Sample configuration",
+            "type": "object",
+            "fa_icon": "fas fa-vials",
+            "description": "Each ID must match exactly one Kraken2 file named '<ID>.*' or '<ID>_*'.",
+            "properties": {
+                "samples": {
+                    "type": "string",
+                    "pattern": "^\\s*[A-Za-z0-9._-]+(\\s*,\\s*[A-Za-z0-9._-]+)*\\s*$",
+                    "errorMessage": "Must be a comma-separated list of IDs using only letters, digits, '.', '_' and '-'.",
+                    "description": "Comma-separated sample IDs (at least 2).",
+                    "fa_icon": "fas fa-vial"
+                },
+                "controls": {
+                    "type": "string",
+                    "pattern": "^\\s*[A-Za-z0-9._-]+(\\s*,\\s*[A-Za-z0-9._-]+)*\\s*$",
+                    "errorMessage": "Must be a comma-separated list of IDs using only letters, digits, '.', '_' and '-'.",
+                    "description": "Comma-separated negative control IDs.",
+                    "fa_icon": "fas fa-vial-circle-check"
+                },
+                "groups_file": {
+                    "type": "string",
+                    "format": "file-path",
+                    "exists": true,
+                    "description": "Tab-separated sample-to-group mapping without header, for PERMANOVA/PERMDISP and group-coloured plots.",
+                    "fa_icon": "fas fa-users"
+                }
+            }
+        },
+        "reference_options": {
+            "title": "Reference data",
+            "type": "object",
+            "fa_icon": "fas fa-book",
+            "properties": {
+                "taxdump": {
+                    "type": "string",
+                    "format": "directory-path",
+                    "exists": true,
+                    "default": "${projectDir}/data/taxdump",
+                    "errorMessage": "NCBI taxdump directory not found. Download https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz or run ./install.sh.",
+                    "description": "NCBI taxdump directory (nodes.dmp, names.dmp), the same one used for every step.",
+                    "fa_icon": "fas fa-sitemap"
+                },
+                "exclude_taxa": {
+                    "type": "string",
+                    "format": "file-path",
+                    "exists": true,
+                    "default": "${projectDir}/config/contaminants_example.txt",
+                    "description": "Contaminant TaxIDs, one per line ('#' starts a comment).",
+                    "fa_icon": "fas fa-ban"
+                }
+            }
+        },
+        "filter_options": {
+            "title": "Contaminant filtering",
+            "type": "object",
+            "fa_icon": "fas fa-filter",
+            "properties": {
+                "filter_include_ancestors": {
+                    "type": "boolean",
+                    "description": "Also remove reads assigned to ancestors of each contaminant, up to --filter_ancestors_max_rank.",
+                    "fa_icon": "fas fa-arrow-up"
+                },
+                "filter_ancestors_max_rank": {
+                    "type": "string",
+                    "default": "genus",
+                    "enum": [
+                        "species",
+                        "genus",
+                        "family",
+                        "order",
+                        "class",
+                        "phylum",
+                        "kingdom",
+                        "domain",
+                        "superkingdom"
+                    ],
+                    "description": "Highest rank removed by --filter_include_ancestors. The root and 'cellular organisms' are never removed.",
+                    "fa_icon": "fas fa-level-up-alt"
+                },
+                "filter_include_descendants": {
+                    "type": "boolean",
+                    "description": "Also remove reads assigned to descendants of each contaminant (strains, subspecies, ...).",
+                    "fa_icon": "fas fa-arrow-down"
+                }
+            }
+        },
+        "recentrifuge_options": {
+            "title": "Recentrifuge",
+            "type": "object",
+            "fa_icon": "fas fa-chart-pie",
+            "properties": {
+                "recentrifuge_min_score": {
+                    "type": "number",
+                    "default": 10,
+                    "minimum": 0,
+                    "description": "Minimum read score for Recentrifuge's quality filter (-y).",
+                    "fa_icon": "fas fa-sliders-h"
+                }
+            }
+        },
+        "abundance_options": {
+            "title": "Abundance tables",
+            "type": "object",
+            "fa_icon": "fas fa-table",
+            "properties": {
+                "abundance_ranks": {
+                    "type": "string",
+                    "default": "species,genus,phylum",
+                    "description": "Comma-separated ranks: domain (superkingdom in pre-2025 taxdumps), kingdom, phylum, class, order, family, genus, species or any.",
+                    "fa_icon": "fas fa-layer-group"
+                },
+                "abundance_source": {
+                    "type": "string",
+                    "default": "auto",
+                    "enum": [
+                        "auto",
+                        "raw",
+                        "ctrl"
+                    ],
+                    "description": "Counts to tabulate: 'ctrl' = Recentrifuge's control-filtered counts (needs --controls), 'raw' = raw sample counts, 'auto' = ctrl when controls are given, raw otherwise.",
+                    "fa_icon": "fas fa-random"
+                },
+                "abundance_aggregate": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Aggregate reads below each rank (e.g. strains into their species) instead of keeping only taxa assigned exactly at that rank.",
+                    "fa_icon": "fas fa-compress-alt"
+                },
+                "abundance_min_count": {
+                    "type": "integer",
+                    "default": 1,
+                    "minimum": 1,
+                    "description": "Drop taxa with fewer total reads.",
+                    "fa_icon": "fas fa-sort-numeric-up"
+                },
+                "abundance_min_samples": {
+                    "type": "integer",
+                    "default": 2,
+                    "minimum": 1,
+                    "description": "Keep only taxa present in at least this many samples.",
+                    "fa_icon": "fas fa-sort-numeric-up"
+                },
+                "abundance_relative": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Also write relative-abundance tables.",
+                    "fa_icon": "fas fa-percent"
+                },
+                "abundance_keep_unranked": {
+                    "type": "boolean",
+                    "description": "Keep taxa whose TaxID is missing from the taxdump (only without --abundance_aggregate).",
+                    "fa_icon": "fas fa-question"
+                }
+            }
+        },
+        "diversity_options": {
+            "title": "Diversity analysis",
+            "type": "object",
+            "fa_icon": "fas fa-chart-bar",
+            "properties": {
+                "diversity_heatmap_top_n": {
+                    "type": "integer",
+                    "default": 50,
+                    "minimum": 0,
+                    "description": "Number of most abundant taxa (by mean relative abundance) shown in the clustered heatmap; 0 shows all taxa.",
+                    "fa_icon": "fas fa-th"
+                }
+            }
+        }
+    },
+    "allOf": [
+        {
+            "$ref": "#/$defs/input_output_options"
+        },
+        {
+            "$ref": "#/$defs/sample_options"
+        },
+        {
+            "$ref": "#/$defs/reference_options"
+        },
+        {
+            "$ref": "#/$defs/filter_options"
+        },
+        {
+            "$ref": "#/$defs/recentrifuge_options"
+        },
+        {
+            "$ref": "#/$defs/abundance_options"
+        },
+        {
+            "$ref": "#/$defs/diversity_options"
+        }
+    ]
+}

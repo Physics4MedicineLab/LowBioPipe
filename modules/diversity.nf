@@ -17,8 +17,9 @@ process DIVERSITY_ANALYSIS {
     label 'process_medium'
     publishDir "${params.outdir}/diversity", mode: 'copy'
 
-    conda "bioconda::scikit-bio=0.5.9"
-    container 'quay.io/biocontainers/scikit-bio:0.5.9--py39h3d4b85c_0'
+    conda "conda-forge::python=3.12 conda-forge::scikit-bio=0.7.4 conda-forge::seaborn=0.13.2 conda-forge::pandas=3.0.6 conda-forge::procps-ng"
+    // Seqera Containers image built from the conda spec above
+    container 'community.wave.seqera.io/library/python_scikit-bio_seaborn_pandas_procps-ng:b9637d4d60955f5b'
 
     input:
     path abundance_tables
@@ -32,13 +33,19 @@ process DIVERSITY_ANALYSIS {
     path "*/pcoa_*.png", emit: pcoa_plots
     path "*/heatmap_*.png", emit: heatmaps
     path "*/permanova_*.txt", optional: true, emit: permanova_results
+    path "*/permdisp_*.txt", optional: true, emit: permdisp_results
 
     script:
-    def groups_arg = groups_file.name != 'NO_FILE' ? "--groups ${groups_file}" : ''
+    def groups_arg = groups_file ? "--groups ${groups_file}" : ''
     """
+    # Single-threaded BLAS: threaded summation order breaks PERMANOVA ties with the
+    # observed statistic differently each run, so p-values would not be reproducible
+    export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
+
     diversity_analysis.py \\
         --indir . \\
         --outdir . \\
+        --heatmap-top-n ${params.diversity_heatmap_top_n} \\
         ${groups_arg}
     """
 }

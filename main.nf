@@ -11,10 +11,11 @@
     - Diversity analysis
 
     Prerequisites: Run nf-core/taxprofiler first.
+    Parameters are validated against nextflow_schema.json (see --help).
 ================================================================================
 */
 
-nextflow.enable.dsl = 2
+include { validateParameters; paramsSummaryLog } from 'plugin/nf-schema'
 
 include { FILTER_TAXA } from './modules/filter_taxa'
 include { RECENTRIFUGE } from './modules/recentrifuge'
@@ -23,93 +24,49 @@ include { DIVERSITY_ANALYSIS } from './modules/diversity'
 
 workflow {
 
-    if (params.help) {
-        helpMessage()
-        exit 0
+    // Types, required params, file existence and allowed values come from nextflow_schema.json
+    validateParameters()
+    log.info paramsSummaryLog(workflow)
+
+    def cleaned_samples = parseList(params.samples)
+    if (cleaned_samples.size() < 2) {
+        error "ERROR: --samples needs at least 2 sample IDs (diversity analysis compares samples)."
     }
 
-    if (!params.taxprofiler_results) {
-        error """
-        ERROR: --taxprofiler_results is required.
-
-        LowBioPipe processes output from nf-core/taxprofiler.
-        Run taxprofiler first, then provide its results directory.
-
-        Example:
-            nextflow run main.nf \\
-                --taxprofiler_results /path/to/taxprofiler/results \\
-                --kraken2_db_name your_db_name \\
-                --samples sample1,sample2 \\
-                --controls blank1,blank2 \\
-                -profile docker
-        """
-    }
-
-    if (!params.kraken2_db_name) {
-        error "ERROR: --kraken2_db_name is required (name of Kraken2 database used in taxprofiler)."
-    }
-
-    // Validate file paths exist
-    if (!file(params.taxdump).exists()) {
-        error "ERROR: --taxdump path does not exist: ${params.taxdump}\nDownload from: https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz"
-    }
-
-    if (!file(params.exclude_taxa).exists()) {
-        error "ERROR: --exclude_taxa file does not exist: ${params.exclude_taxa}"
-    }
-
-    // Validate samples and controls are provided
-    if (!params.samples || params.samples.size() == 0) {
-        error "ERROR: --samples is required. Provide comma-separated sample IDs."
-    }
-
-    // Clean sample IDs: handle String vs List and filter empty entries
-    def cleaned_samples = (params.samples instanceof List ? params.samples : [params.samples]).collect { it?.trim() }.findAll { it }
-    if (cleaned_samples.size() < params.samples.size()) {
-        log.warn "WARNING: Empty sample IDs detected and removed from --samples"
-    }
-    if (cleaned_samples.size() == 0) {
-        error "ERROR: --samples contains no valid sample IDs after cleaning."
-    }
-
-    if (!params.controls || params.controls.size() == 0) {
+    def cleaned_controls = parseList(params.controls)
+    if (!cleaned_controls) {
         log.warn "WARNING: No --controls provided. Running without negative control integration."
     }
 
-    // Clean control IDs
-    def cleaned_controls = !params.controls ? [] : (params.controls instanceof List ? params.controls : [params.controls]).collect { it?.trim() }.findAll { it }
-
-    // Validate groups file if provided
-    if (params.groups_file && !file(params.groups_file).exists()) {
-        error "ERROR: --groups_file does not exist: ${params.groups_file}"
+    def all_ids = cleaned_controls + cleaned_samples
+    def duplicate_ids = all_ids.countBy { id -> id }.findAll { _id, n -> n > 1 }.keySet()
+    if (duplicate_ids) {
+        error "ERROR: IDs listed more than once across --samples/--controls: ${duplicate_ids.join(', ')}"
     }
 
-    // Validate abundance_ranks contains valid values
-    def valid_ranks = ['superkingdom', 'phylum', 'class', 'order', 'family', 'genus', 'species', 'any']
-    params.abundance_ranks.each { rank ->
-        if (!valid_ranks.contains(rank.toLowerCase())) {
-            error "ERROR: Invalid rank '${rank}'. Must be one of: ${valid_ranks.join(', ')}"
-        }
+    // 'domain' replaced 'superkingdom' in NCBI taxdumps from 2025
+    def valid_ranks = ['domain', 'superkingdom', 'kingdom', 'phylum', 'class', 'order', 'family', 'genus', 'species', 'any']
+    def abundance_ranks = parseList(params.abundance_ranks).collect { rank -> rank.toLowerCase() }
+    def invalid_ranks = abundance_ranks.findAll { rank -> !valid_ranks.contains(rank) }
+    if (!abundance_ranks || invalid_ranks) {
+        error "ERROR: Invalid --abundance_ranks '${params.abundance_ranks}'. Use a comma-separated list of: ${valid_ranks.join(', ')}"
     }
 
-    log.info """
-        =====================================================
-        LowBioPipe v${workflow.manifest.version}
-        =====================================================
-        Taxprofiler results : ${params.taxprofiler_results}
-        Kraken2 database    : ${params.kraken2_db_name}
-        Output directory    : ${params.outdir}
-        Taxdump             : ${params.taxdump}
-        Exclusion list      : ${params.exclude_taxa}
-        =====================================================
-        """.stripIndent()
+    // auto: Recentrifuge's control-filtered counts when controls are given, raw counts otherwise
+    def counts_source = params.abundance_source == 'auto' ? (cleaned_controls ? 'ctrl' : 'raw') : params.abundance_source
+    if (counts_source == 'ctrl' && !cleaned_controls) {
+        error "ERROR: --abundance_source ctrl needs --controls (Recentrifuge only filters against controls)."
+    }
 
-    // Load Kraken2 classified reads from taxprofiler output
-    kraken_results = Channel
-        .fromPath("${params.taxprofiler_results}/kraken2/${params.kraken2_db_name}/*.classifiedreads.txt")
-        .ifEmpty { error "No Kraken2 results found at ${params.taxprofiler_results}/kraken2/${params.kraken2_db_name}/" }
+    // Load Kraken2 classified reads from taxprofiler output, keeping only the requested IDs
+    def kraken_dir = "${params.taxprofiler_results}/kraken2/${params.kraken2_db_name}"
+    def kraken_files = files("${kraken_dir}/*.classifiedreads.txt")
+    if (!kraken_files) {
+        error "ERROR: No Kraken2 results found at ${kraken_dir}/"
+    }
+    kraken_results = channel.fromList(matchIdsToFiles(all_ids, kraken_files, kraken_dir))
 
-    // Step 1: Filter contaminants
+    // Step 1: Filter contaminants (the only contaminant filter; Recentrifuge gets no exclusions)
     FILTER_TAXA(
         kraken_results,
         file(params.taxdump),
@@ -118,7 +75,7 @@ workflow {
 
     // Step 2: Recentrifuge analysis
     RECENTRIFUGE(
-        FILTER_TAXA.out.filtered_reads.collect(),
+        FILTER_TAXA.out.filtered_reads.toList().map { pairs -> [pairs.collect { p -> p[0] }, pairs.collect { p -> p[1] }] },
         file(params.taxdump),
         cleaned_samples,
         cleaned_controls
@@ -126,84 +83,57 @@ workflow {
 
     // Step 3: Abundance tables at multiple ranks
     RCF_TO_ABUNDANCE(
-        RECENTRIFUGE.out.rcf_files,
-        Channel.of(params.abundance_ranks).flatten()
+        RECENTRIFUGE.out.rcf_tables,
+        file(params.taxdump),
+        channel.fromList(abundance_ranks),
+        counts_source,
+        cleaned_controls
     )
 
     // Step 4: Diversity analysis
-    groups_ch = params.groups_file ? Channel.fromPath(params.groups_file) : Channel.of(file('NO_FILE'))
-
     DIVERSITY_ANALYSIS(
         RCF_TO_ABUNDANCE.out.abundance_tables.collect(),
-        groups_ch
+        params.groups_file ? file(params.groups_file) : []
     )
+
+    // Registered here with local copies of `workflow` and `params`, which are no longer
+    // resolvable when the handler runs (both with Nextflow 25.10 and 26.04)
+    def run = workflow
+    def outdir = params.outdir
+    workflow.onComplete {
+        log.info """
+            =====================================================
+            LowBioPipe completed at: ${run.complete}
+            Status: ${run.success ? 'SUCCESS' : 'FAILED'}
+            Duration: ${run.duration}
+            =====================================================
+            Results: ${outdir}
+            """.stripIndent()
+    }
 }
 
-workflow.onComplete {
-    log.info """
-        =====================================================
-        LowBioPipe completed at: ${workflow.complete}
-        Status: ${workflow.success ? 'SUCCESS' : 'FAILED'}
-        Duration: ${workflow.duration}
-        =====================================================
-        Results: ${params.outdir}
-        """.stripIndent()
+// Split a comma-separated parameter into trimmed, non-empty items
+def parseList(value) {
+    return value ? value.toString().tokenize(',').collect { item -> item.trim() }.findAll { item -> item } : []
 }
 
-def helpMessage() {
-    log.info """
-    =========================================================================
-    LowBioPipe v${workflow.manifest.version}
-    =========================================================================
-
-    Post-taxprofiler processing for low biomass microbiome analysis.
-
-    Usage:
-        nextflow run main.nf --taxprofiler_results <path> --kraken2_db_name <name> [options]
-
-    Required:
-        --taxprofiler_results   Path to nf-core/taxprofiler output directory
-        --kraken2_db_name       Name of Kraken2 database used in taxprofiler
-
-    Sample configuration:
-        --samples               Comma-separated list of sample IDs
-        --controls              Comma-separated list of negative control IDs
-        --groups_file           TSV file mapping samples to groups (for PERMANOVA)
-
-    Reference data:
-        --taxdump               Path to NCBI taxdump directory (default: data/taxdump)
-        --exclude_taxa          Path to contaminant TaxID file (default: config/contaminants_example.txt)
-
-    Contaminant filtering:
-        --filter_include_ancestors      Also filter ancestor taxa (default: false)
-        --filter_include_descendants    Also filter descendant taxa (default: false)
-
-    Recentrifuge:
-        --recentrifuge_min_score        Minimum score threshold (default: 10)
-
-    Abundance tables:
-        --abundance_ranks           Ranks to generate (default: species,genus,phylum)
-        --abundance_aggregate       Aggregate taxa to rank (default: true)
-        --abundance_min_count       Minimum total count threshold (default: 1)
-        --abundance_min_samples     Minimum samples threshold (default: 2)
-        --abundance_relative        Generate relative abundance (default: true)
-        --abundance_keep_unranked   Keep taxa without resolvable rank (default: false)
-
-    Output:
-        --outdir                Output directory (default: results)
-
-    Other:
-        --help                  Show this message
-        -profile                docker, singularity, conda, or test
-        -resume                 Resume previous run
-
-    Example:
-        nextflow run main.nf \\
-            --taxprofiler_results taxprofiler_output \\
-            --kraken2_db_name standard_db \\
-            --samples S1,S2,S3,S4 \\
-            --controls BLANK1,BLANK2 \\
-            --groups_file metadata/groups.tsv \\
-            -profile docker
-    """
+// Pair each ID with exactly one Kraken2 file. A file belongs to the longest ID that
+// prefixes its name followed by '.' or '_', so 'S1' never claims the file of 'S1_rep2'.
+def matchIdsToFiles(ids, kraken_files, kraken_dir) {
+    def owner = { f ->
+        ids.findAll { id -> f.name.size() > id.size() && f.name.startsWith(id) && f.name[id.size()] in ['.', '_'] }
+           .max { id -> id.size() }
+    }
+    def files_by_id = kraken_files.groupBy(owner)
+    return ids.collect { id ->
+        def hits = files_by_id[id] ?: []
+        if (hits.size() == 0) {
+            error "ERROR: No Kraken2 file for ID '${id}' in ${kraken_dir}/ (expected a name starting with '${id}.' or '${id}_')"
+        }
+        if (hits.size() > 1) {
+            error "ERROR: ID '${id}' matches ${hits.size()} Kraken2 files (${hits.collect { h -> h.name }.join(', ')}). " +
+                  "List each ID explicitly, or run taxprofiler with --perform_runmerging to get one file per sample."
+        }
+        [id, hits[0]]
+    }
 }
